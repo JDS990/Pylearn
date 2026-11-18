@@ -3,10 +3,11 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>PyLearn: Python to Language Models</title>
-<meta name="description" content="Learn Python from zero to your own language model. Runs offline in your browser.">
-<meta name="theme-color" content="#0f1419">
-<meta name="color-scheme" content="dark">
+<title>PyLearn</title>
+<meta name="description" content="Tap-first Python drills, from zero to your own language model. Works offline.">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#2f6fde" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#121820" media="(prefers-color-scheme: dark)">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -16,37 +17,29 @@
 <link rel="icon" type="image/svg+xml" href="icons/icon.svg">
 <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
 <link rel="apple-touch-icon" sizes="180x180" href="icons/apple-touch-icon.png">
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="drills.css">
 </head>
 <body>
-<header id="topbar">
-  <button id="menuBtn" class="iconbtn" aria-label="Open lesson list" aria-controls="drawer" aria-expanded="false">
-    <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path d="M3 6h18M3 12h18M3 18h18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-  </button>
-  <div id="toptitle"><span class="brand">Py<span>Learn</span></span><span id="topLesson"></span></div>
-  <div id="pyStatus" class="pystatus loading" title="Python status"><span class="dot"></span><span class="lbl">Python…</span></div>
+<header id="bar">
+  <div class="bar-in">
+    <button id="backBtn" class="ib hidden" aria-label="Back">
+      <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
+    <div id="barTitle">Py<span>Learn</span></div>
+    <div id="streakChip" title="Day streak">🔥 <b>0</b></div>
+  </div>
+  <div id="sessProg" class="hidden"><div></div></div>
 </header>
-<div id="overlay" class="hidden"></div>
-<aside id="drawer" aria-label="Lessons">
-  <div id="brand">
-    <h1>Py<span>Learn</span></h1>
-    <div class="sub">From zero to your own language model</div>
-    <div id="progressbar"><div></div></div>
-    <div id="progresstext"></div>
-  </div>
-  <nav id="nav"></nav>
-  <div id="sidefoot">
-    <div class="footrow">
-      <button class="b small" id="exportBtn" title="Download your progress and code as a JSON file">⬇ Export</button>
-      <button class="b small" id="importBtn" title="Load progress from a JSON file">⬆ Import</button>
-      <button class="linkbtn" id="resetAll" title="Erase all progress and saved code">Reset</button>
-    </div>
-    <div class="footnote" id="offlineNote">Works offline once loaded. Progress is stored on this device.</div>
-    <input type="file" id="importFile" accept="application/json,.json" class="hidden">
-  </div>
-</aside>
-<main id="main"><div id="content"><div class="loading-msg">Loading lessons…</div></div></main>
+<main id="view"><div class="loading">Loading…</div></main>
+<div id="actbar" class="hidden"></div>
+<nav id="tabs" aria-label="Sections">
+  <button data-tab="today"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3c1 3 4 4.5 4 8.5A4 4 0 0 1 8 11.5c0-1.5.7-2.6 1.5-3.5.2 1.6 1 2.5 2 2.8C11 8 11.4 5.4 12 3z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M6 15a6 6 0 0 0 12 0" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg><span>Today</span></button>
+  <button data-tab="learn"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v15H6.5A2.5 2.5 0 0 0 4 20.5zM4 20.5A2.5 2.5 0 0 0 6.5 23H20v-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg><span>Lessons</span></button>
+  <button data-tab="cards"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="6" width="14" height="15" rx="2.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M7 3h11.5A2.5 2.5 0 0 1 21 5.5V17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg><span>Cards</span></button>
+  <button data-tab="more"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="2" fill="currentColor"/><circle cx="12" cy="12" r="2" fill="currentColor"/><circle cx="19" cy="12" r="2" fill="currentColor"/></svg><span>More</span></button>
+</nav>
 <div id="toast" role="status" aria-live="polite"></div>
-<script src="app.js"></script>
+<input type="file" id="importFile" accept="application/json,.json" class="hidden">
+<script src="drills.js"></script>
 </body>
 </html>

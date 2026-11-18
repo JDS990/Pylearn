@@ -1,7 +1,7 @@
 {
  "name": "PyLearn",
  "short_name": "PyLearn",
- "description": "Learn Python from zero to your own language model. Runs offline.",
+ "description": "Tap-first Python drills and coding lessons, from zero to your own language model. Works offline.",
  "id": "./",
  "start_url": "./",
  "scope": "./",

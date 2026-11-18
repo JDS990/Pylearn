@@ -4,6 +4,7 @@
    Python runs in a Web Worker (worker.js + self-hosted Pyodide). */
 
 const STORE_KEY = "pylearn.progress.v1";
+const DRILL_KEY = "pylearn.drills.v1";   // drill/flashcard/streak state, owned by drills.js
 const S = { modules: [], lessons: [], progress: { completed: [], code: {}, last: null }, current: null, data: null, busy: false };
 const byId = {};
 let saveTimer = null;
@@ -264,6 +265,7 @@ function openLesson(id) {
   flushSave();
   if (!byId[id]) id = S.lessons[0].id;
   S.current = id;
+  try { history.replaceState(null, "", "#" + id); } catch (e) {}
   const l = byId[id], m = S.modules.find(x => x.id === l.module);
   const idx = S.lessons.indexOf(l);
   const prev = S.lessons[idx - 1], next = S.lessons[idx + 1];
@@ -553,7 +555,9 @@ function toast(msg, warn) {
 // ---------------------------------------------------------------- export / import / reset
 $("exportBtn").onclick = () => {
   flushSave();
-  const data = { app: "PyLearn", format: 1, exported: new Date().toISOString(), ...S.progress };
+  let drills = null;
+  try { drills = JSON.parse(localStorage.getItem(DRILL_KEY) || "null"); } catch (e) {}
+  const data = { app: "PyLearn", format: 2, exported: new Date().toISOString(), ...S.progress, drills };
   const blob = new Blob([JSON.stringify(data, null, 1)], { type: "application/json" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
@@ -572,8 +576,9 @@ $("importFile").onchange = async (e) => {
     const p = normProgress(raw);
     p.completed = p.completed.filter(id => byId[id]);
     for (const k of Object.keys(p.code)) if (!byId[k]) delete p.code[k];
-    if (!confirm(`Replace your progress on this device with the file's? (${p.completed.length} lessons complete, code for ${Object.keys(p.code).length} lessons)`)) return;
+    if (!confirm(`Replace your progress on this device with the file's? (${p.completed.length} lessons complete, code for ${Object.keys(p.code).length} lessons${raw.drills ? ", plus drill progress" : ""})`)) return;
     S.progress = p; saveProgress();
+    if (raw.drills && typeof raw.drills === "object") localStorage.setItem(DRILL_KEY, JSON.stringify(raw.drills));
     openLesson(p.last && byId[p.last] ? p.last : S.lessons[0].id);
     closeDrawer();
     toast("Progress imported");
@@ -595,6 +600,20 @@ if ("serviceWorker" in navigator && (location.protocol === "https:" || ["localho
     $("offlineNote").textContent = "✓ Saved for offline use. Progress is stored on this device; use Export to back it up.";
   });
   navigator.serviceWorker.addEventListener("controllerchange", () => { if (hadController) toast("PyLearn was updated. Reopen it to use the new version."); });
+  // On the very first visit the page isn't controlled yet, so Python's files bypass the
+  // service worker. Once Python is up, copy them into the offline cache (from the HTTP cache).
+  (async () => {
+    try {
+      await runner.readyP; await navigator.serviceWorker.ready;
+      const meta = await (await fetch("data/meta.json")).json();
+      const c = await caches.open(meta.pyodide_cache);
+      for (const a of meta.pyodide_assets) {
+        const u = new URL(a, location.href).href;
+        if (!(await c.match(u))) await c.add(u);
+      }
+      offline.pyodide = true;
+    } catch (e) { /* offline coding will be set up next time */ }
+  })();
 } else {
   $("offlineNote").textContent = "Offline mode needs https (or localhost). Progress is stored on this device.";
 }
@@ -608,7 +627,8 @@ if ("serviceWorker" in navigator && (location.protocol === "https:" || ["localho
     S.modules = S.data.modules; S.lessons = S.data.lessons;
     S.lessons.forEach(l => byId[l.id] = l);
     S.progress = loadProgress();
-    let start = S.progress.last && byId[S.progress.last] ? S.progress.last : null;
+    const fromHash = decodeURIComponent(location.hash.slice(1));
+    let start = byId[fromHash] ? fromHash : S.progress.last && byId[S.progress.last] ? S.progress.last : null;
     if (!start) { const firstTodo = S.lessons.find(l => !isDone(l.id)); start = (firstTodo || S.lessons[0]).id; }
     openLesson(start);
   } catch (e) {
