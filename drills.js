@@ -11,7 +11,9 @@ const TYPE_NAME = { predict: "Predict the output", order: "Put the lines in orde
 const TYPE_ICON = { predict: "🔮", order: "🧩", fill: "✏️", bug: "🐞", card: "🃏" };
 const PRAISE = ["Correct!", "Nice!", "Exactly right!", "You got it!", "Spot on!"];
 const $ = (id) => document.getElementById(id);
-const D = { modules: [], lessons: [], byId: {}, idx: {}, bank: {}, items: {}, lessonOf: {} };
+const D = { modules: [], lessons: [], byId: {}, idx: {}, bank: {}, items: {}, lessonOf: {}, mm: [], mmById: {}, topicOf: {} };
+const MM_SHARE = 0.2;           // share of the daily review kept for Muscle Memory items
+const READ_MS = 1500;           // "read it first" pause before a second look at a missed item
 let ST = null;          // drill state
 let SESSION = null;     // active practice session
 let META = null;
@@ -24,7 +26,7 @@ function keyOf(n) { return new Date(n * 864e5).toISOString().slice(0, 10); }
 function today() { return dayNum(dayKey()); }
 
 // ------------------------------------------------------------------ storage
-function blankState() { return { v: 1, items: {}, days: {}, met: {}, goal: 10, here: null, best: 0, xp: 0 }; }
+function blankState() { return { v: 1, items: {}, days: {}, met: {}, goal: 10, here: null, best: 0, xp: 0, mmAll: false }; }
 function normState(d) {
   const s = blankState();
   if (!d || typeof d !== "object") return s;
@@ -40,6 +42,7 @@ function normState(d) {
   if ([5, 10, 15, 20].includes(d.goal)) s.goal = d.goal;
   if (typeof d.here === "string") s.here = d.here;
   if (typeof d.best === "number") s.best = d.best;
+  if (d.mmAll === true) s.mmAll = true;
   // XP: kept if present; state saved before XP existed gets a one-time estimate from its
   // history (pure function of the state, so loading it again gives the same number).
   if (typeof d.xp === "number" && isFinite(d.xp)) { s.xp = Math.max(0, Math.round(d.xp)); if (typeof d.xpBackfill === "number") s.xpBackfill = d.xpBackfill; }
@@ -147,6 +150,62 @@ function dueCards() {
   return out;
 }
 
+// ------------------------------------------------------------------ Muscle Memory deck
+// Short drills on the moves that must become automatic. A topic unlocks once its coding
+// lesson ("after") is reached: done on the coding page, drilled, or a later lesson reached.
+function topicItems(tid) { const T = D.mmById[tid]; return T ? T.drills.concat(T.cards) : []; }
+function topicReached(t) {
+  if (ST.mmAll) return true;
+  const i = D.idx[t.after];
+  if (i === undefined) return false;
+  return codingProgress().completed.includes(t.after) || i < frontier() || lessonStats(t.after).seen > 0;
+}
+function mmUnlocked() { return D.mm.filter(topicReached); }
+function topicMastery(tid) {
+  const items = topicItems(tid);
+  return items.length ? items.filter(it => (rec(it.id) || {}).b >= 2).length / items.length : 0;
+}
+function mmStats() {
+  const unl = mmUnlocked(), t = today();
+  const items = unl.flatMap(x => topicItems(x.id));
+  return { topics: unl.length, total: D.mm.length, items: items.length,
+    auto: items.filter(it => (rec(it.id) || {}).b >= 2).length,
+    due: items.filter(it => rec(it.id) && rec(it.id).due <= t).length,
+    fresh: items.filter(it => !rec(it.id)).length };
+}
+function mmPriority(items) {      // missed first, then due (oldest first), then new in course order
+  const t = today();
+  const due = items.filter(it => rec(it.id) && rec(it.id).due <= t)
+    .sort((a, b) => (rec(b.id).b === 1) - (rec(a.id).b === 1) || rec(a.id).due - rec(b.id).due);
+  const fresh = items.filter(it => !rec(it.id));
+  return { due, fresh };
+}
+function buildMuscle(n = 10, tid) {
+  const pool = tid ? topicItems(tid) : mmUnlocked().flatMap(x => topicItems(x.id));
+  if (tid) return interleave(shuffle(D.mmById[tid].drills.map(d => d.id)).concat(shuffle(D.mmById[tid].cards.map(c => c.id))));
+  const { due, fresh } = mmPriority(pool);
+  const picked = [], has = new Set();
+  let cards = 0;
+  const add = (it) => {
+    if (picked.length >= n || has.has(it.id)) return;
+    if (it.type === "card") { if (cards >= Math.round(n * 0.3)) return; cards++; }
+    picked.push(it.id); has.add(it.id);
+  };
+  due.forEach(add);
+  // new items: a few per topic, earliest unlocked topics first (basics before the rest)
+  const byTopic = mmUnlocked().map(x => interleave(shuffle(topicItems(x.id).filter(it => !rec(it.id)).map(it => it.id))).map(id => D.items[id]));
+  for (let round = 0; picked.length < n && byTopic.some(g => g.length > round); round++) for (const g of byTopic) if (g[round]) add(g[round]);
+  fresh.forEach(add);
+  pool.filter(it => rec(it.id)).sort((a, b) => rec(a.id).due - rec(b.id).due).forEach(add);   // everything seen: review ahead
+  return interleave(shuffle(picked));
+}
+function srcLabel(id) {
+  const lid = D.lessonOf[id];
+  if (lid) return `${lid} ${D.byId[lid].title}`;
+  const T = D.mmById[D.topicOf[id]];
+  return T ? `💪 ${T.title}` : "";
+}
+
 // ------------------------------------------------------------------ building sessions
 function shuffle(a) { for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; }
 function interleave(ids) {      // avoid two of the same drill type in a row where possible
@@ -168,8 +227,11 @@ function byTypeRoundRobin(items) {   // keep the order within each type, but rot
 }
 function buildDaily(n = ST.goal) {
   const t = today(), here = hereId(), unl = unlocked();
-  const all = unl.flatMap(lessonItems);
+  const mmPool = mmUnlocked().flatMap(x => topicItems(x.id));
+  const all = unl.flatMap(lessonItems).concat(mmPool);
   const seen = all.filter(it => rec(it.id));
+  const hereIdx = D.idx[here] || 0;
+  const recent = (it) => { const l = D.lessonOf[it.id]; return l && D.idx[l] >= hereIdx - 3 && D.idx[l] <= hereIdx; };
   const picked = [], has = new Set();
   let cards = 0;
   const add = (it) => {
@@ -177,17 +239,21 @@ function buildDaily(n = ST.goal) {
     if (it.type === "card") { if (cards >= Math.max(2, Math.round(n * 0.3))) return; cards++; }
     picked.push(it.id); has.add(it.id);
   };
-  // 1. due reviews (missed ones first, then oldest)
+  // 1. due reviews: missed ones first, then the lessons he's on now (here and the 3 before), then oldest
   byTypeRoundRobin(seen.filter(it => rec(it.id).due <= t)
-    .sort((a, b) => (rec(b.id).b === 1) - (rec(a.id).b === 1) || rec(a.id).due - rec(b.id).due || rec(b.id).lapses - rec(a.id).lapses))
+    .sort((a, b) => (rec(b.id).b === 1) - (rec(a.id).b === 1) || recent(b) - recent(a) || rec(a.id).due - rec(b.id).due || rec(b.id).lapses - rec(a.id).lapses))
     .slice(0, Math.ceil(n * 0.6)).forEach(add);
-  // 2. weak spots: items missed before, lowest accuracy first
-  seen.filter(it => rec(it.id).lapses > 0).sort((a, b) => rec(a.id).ok / rec(a.id).n - rec(b.id).ok / rec(b.id).n).slice(0, 2).forEach(add);
-  // 3. new material from where he is, then from recent lessons going back
+  // 2. weak spots: items missed before (not already answered today), lowest accuracy first
+  seen.filter(it => rec(it.id).lapses > 0 && rec(it.id).last !== t).sort((a, b) => rec(a.id).ok / rec(a.id).n - rec(b.id).ok / rec(b.id).n).slice(0, 2).forEach(add);
+  // 3. muscle memory: a couple of core-pattern items every day (due first, else new from the basics)
+  const mmWant = mmPool.length ? Math.max(1, Math.round(n * MM_SHARE)) : 0;
+  let mmHave = picked.filter(id => D.topicOf[id]).length;
+  for (const it of buildMuscle(mmWant * 2).map(id => D.items[id])) { if (mmHave >= mmWant) break; const k = picked.length; add(it); if (picked.length > k) mmHave++; }
+  // 4. new material from where he is, then from recent lessons going back
   const hi = unl.indexOf(here) >= 0 ? unl.indexOf(here) : unl.length - 1;
   const order = [here, ...unl.slice(0, hi).reverse(), ...unl.slice(hi + 1)];
   for (const lid of order) for (const it of interleave(lessonItems(lid).map(x => x.id)).map(id => D.items[id])) if (!rec(it.id)) add(it);
-  // 4. still short (everything seen): review ahead, earliest due first
+  // 5. still short (everything seen): review ahead, earliest due first
   seen.slice().sort((a, b) => rec(a.id).due - rec(b.id).due).forEach(add);
   return interleave(shuffle(picked));
 }
@@ -350,6 +416,7 @@ function renderToday() {
       </div>
       <div style="margin-top:12px"><button class="btn" id="goCards">🃏 Review flashcards${dc ? ` (${dc} due)` : ""}</button></div>
     </div>
+    ${mmCard()}
     ${weak.length ? `<div class="card"><h3>Weak spots</h3><div class="muted small">Lessons where you've missed the most. A quick round helps.</div>
       ${weak.map(w => `<button class="list-btn" data-lid="${w.id}"><div class="grow"><b>${w.id}</b> ${esc(D.byId[w.id].title)}<div class="muted small">${Math.round(100 * w.acc)}% right so far</div></div><span class="chev">›</span></button>`).join("")}</div>` : ""}
   `);
@@ -357,8 +424,49 @@ function renderToday() {
   $("hereDrills").onclick = () => { startSession("lesson", buildLesson(here), "Lesson " + here, here); };
   $("hereOpen").onclick = () => go("#/lesson/" + here);
   $("goCards").onclick = () => go("#/cards");
+  $("goMuscle").onclick = () => go("#/muscle");
   $("rankCard").onclick = () => go("#/ranks");
   for (const b of document.querySelectorAll(".list-btn[data-lid]")) b.onclick = () => startSession("lesson", buildLesson(b.dataset.lid), "Lesson " + b.dataset.lid, b.dataset.lid);
+}
+
+function mmCard() {
+  const m = mmStats();
+  const sub = !m.topics ? "Unlocks after lesson " + esc(D.mm[0] ? D.mm[0].after : "1.4")
+    : `${m.auto} of ${m.items} automatic · ${m.topics} of ${m.total} topics${m.due ? ` · <b>${m.due} due</b>` : ""}`;
+  return `<button class="card mmcard" id="goMuscle"><span class="mm-emoji">💪</span>
+    <span class="grow"><b>Muscle Memory</b><div class="muted small">${sub}</div>
+    <div class="bar"><div style="width:${m.items ? Math.round(100 * m.auto / m.items) : 0}%"></div></div></span><span class="chev">›</span></button>`;
+}
+function startMuscle(tid) {
+  const ids = tid ? buildMuscle(0, tid) : buildMuscle(10);
+  if (!ids.length) return toast("Nothing unlocked yet. Finish lesson " + (D.mm[0] ? D.mm[0].after : "1.4") + " first.");
+  startSession("muscle", ids, tid ? D.mmById[tid].title : "Muscle Memory");
+  SESSION.topic = tid || null;
+}
+function renderMuscle() {
+  setBar({ title: "Muscle Memory", back: () => history.length > 1 ? history.back() : go("#/today") }); setTab("today");
+  const m = mmStats();
+  let rows = "";
+  for (const T of D.mm) {
+    const open = topicReached(T), ms = Math.round(100 * topicMastery(T.id)), n = T.drills.length + T.cards.length;
+    const L = D.byId[T.after];
+    rows += open
+      ? `<button class="list-btn mm-topic" data-tid="${T.id}"><div class="grow"><b>${esc(T.title)}</b><div class="muted small">${n} items · ${ms}% automatic</div><div class="bar"><div style="width:${ms}%"></div></div></div><span class="chev">›</span></button>`
+      : `<div class="list-btn mm-topic locked" data-tid="${T.id}"><div class="grow"><b>🔒 ${esc(T.title)}</b><div class="muted small">Unlocks after lesson ${esc(T.after)}${L ? " · " + esc(L.title) : ""}</div></div></div>`;
+  }
+  view(`
+    <div class="card hero">
+      <div style="font-size:21px;font-weight:750;line-height:1.2">💪 Muscle Memory</div>
+      <div class="muted small" style="margin:4px 0 12px">Short, rapid-fire drills on the Python moves that should feel automatic. Read each line before you tap: quick doesn't mean careless.</div>
+      <button class="btn primary" id="mmGo">${m.due ? `Rapid round · ${m.due} due` : "Rapid round · 10"}</button>
+      <div class="stat" style="margin-top:12px"><div><b>${m.auto}</b><span>automatic</span></div><div><b>${m.due}</b><span>due today</span></div><div><b>${m.topics}/${m.total}</b><span>topics open</span></div></div>
+    </div>
+    <div class="card"><h3>Topics</h3><div class="muted small">A topic opens when you reach its coding lesson. A couple of these also show up in your daily review.</div>${rows}</div>
+    ${m.topics < m.total ? `<button class="linkbtn" id="mmAll">I already know these: open all topics</button>` : ""}
+  `);
+  $("mmGo").onclick = () => startMuscle();
+  for (const b of document.querySelectorAll("button.mm-topic[data-tid]")) b.onclick = () => startMuscle(b.dataset.tid);
+  const all = $("mmAll"); if (all) all.onclick = () => { if (!confirm("Open every Muscle Memory topic, even ones whose lesson you haven't reached?")) return; ST.mmAll = true; saveState(); renderMuscle(); };
 }
 
 function rankCard() {
@@ -399,7 +507,7 @@ function renderRanks() {
 function renderLearn() {
   setBar({ title: "Lessons" }); setTab("learn");
   const here = hereId(), cp = codingProgress();
-  let h = '<p class="muted small" style="margin:0 2px 12px">Open any lesson. Tap one to see its key ideas and practice it.</p>';
+  let h = '<p class="muted small" style="margin:0 2px 12px">Open any lesson. Tap one to see its key ideas and practice it.</p>' + mmCard();
   for (const m of D.modules) {
     const isHere = m.lessons.includes(here);
     const mm = m.lessons.reduce((a, id) => a + mastery(id), 0) / m.lessons.length;
@@ -416,6 +524,7 @@ function renderLearn() {
   }
   view(h);
   for (const el of document.querySelectorAll(".mod-head")) el.onclick = () => el.parentElement.classList.toggle("open");
+  $("goMuscle").onclick = () => go("#/muscle");
   for (const el of document.querySelectorAll(".les")) el.onclick = () => go("#/lesson/" + el.dataset.id);
   const cur = document.querySelector(".les.cur"); if (cur) cur.scrollIntoView({ block: "center" });
 }
@@ -585,21 +694,32 @@ function endSession() { SESSION = null; go("#/today"); }
 function renderSession() {
   const S = SESSION;
   if (!S) return go("#/today");
-  setBar({ title: S.title, session: true, back: () => { if (Object.keys(S.first).length === 0 || confirm("Stop this practice round? Your answers so far are saved.")) { const lid = S.lid, kind = S.kind; SESSION = null; go(lid && kind !== "daily" ? "#/lesson/" + lid : "#/today"); } } });
+  setBar({ title: S.title, session: true, back: () => { if (Object.keys(S.first).length === 0 || confirm("Stop this practice round? Your answers so far are saved.")) { const lid = S.lid, kind = S.kind; SESSION = null; go(kind === "muscle" ? "#/muscle" : lid && kind !== "daily" ? "#/lesson/" + lid : "#/today"); } } });
   if (S.i >= S.queue.length) return renderSessionEnd();
   $("sessProg").firstElementChild.style.width = (100 * S.i / S.queue.length) + "%";
   S.answered = false;
   const it = D.items[S.queue[S.i]];
-  const lid = D.lessonOf[it.id];
   const retry = S.first[it.id] === false;
-  const head = `<div class="tag">${TYPE_ICON[it.type]} ${TYPE_NAME[it.type]} <span class="lid">· ${lid} ${esc(D.byId[lid].title)}${retry ? " · try again" : ""}</span></div>`;
+  const breathe = (S.missRun || 0) >= 2;
+  let head = `<div class="tag">${TYPE_ICON[it.type]} ${TYPE_NAME[it.type]} <span class="lid">· ${esc(srcLabel(it.id))}${retry ? " · try again" : ""}</span></div>`;
+  if (breathe) head += '<div class="readnote breathe" id="readNote">🌬️ <b>Take a breath.</b> Two misses in a row: read this one line by line before you tap.</div>';
+  else if (retry) head += '<div class="readnote" id="readNote">👀 <b>Second look.</b> You missed this earlier: read every line slowly before answering.</div>';
   ({ predict: drawPredict, fill: drawFill, bug: drawBug, order: drawOrder, card: drawCard })[it.type](it, head);
+  if ((retry || breathe) && it.type !== "card") readFirst(breathe ? 2 * READ_MS : READ_MS);
+  if (breathe) S.missRun = 0;
+}
+function readFirst(ms) {     // a short, soft pause: answer buttons wake up after the reading time
+  const btns = [...document.querySelectorAll("#view .choice, #view .line, #view .tile")].filter(b => !b.disabled);
+  btns.forEach(b => { b.disabled = true; b.classList.add("reading"); });
+  const tok = SESSION && SESSION.i;
+  setTimeout(() => { if (!SESSION || SESSION.i !== tok || SESSION.answered) return; btns.forEach(b => { b.disabled = false; b.classList.remove("reading"); }); }, ms);
 }
 function shownChoices(it) { return shuffle([it.answer, ...it.wrong]); }
 function feedback(ok, it, extra = "") {
   const fb = document.createElement("div");
   fb.className = "fb " + (ok ? "ok" : "bad");
-  fb.innerHTML = `<h4>${ok ? "✅ " + PRAISE[Math.floor(Math.random() * PRAISE.length)] : "❌ Not quite"}</h4>${extra}<p>${inline(it.why)}</p>`;
+  const reread = ok ? "" : `<p class="reread">👀 <b>Read it again:</b> ${it.type === "card" ? "say the answer out loud once" : "go back over the code line by line and find where it differs from what you expected"}.${SESSION && !(it.id in SESSION.first) ? " It will come back at the end of this round." : ""}</p>`;
+  fb.innerHTML = `<h4>${ok ? "✅ " + PRAISE[Math.floor(Math.random() * PRAISE.length)] : "❌ Not quite"}</h4>${extra}<p>${inline(it.why)}</p>${reread}`;
   $("view").appendChild(fb);
   setTimeout(() => fb.scrollIntoView({ block: "nearest", behavior: "smooth" }), 60);
 }
@@ -608,6 +728,7 @@ function record(it, ok, rating) {
   S.answered = true;
   const first = !(it.id in S.first);
   const xp = xpFor(it, ok, first);
+  S.missRun = ok ? 0 : (S.missRun || 0) + 1;
   if (first) {
     S.first[it.id] = ok;
     grade(it.id, rating || (ok ? "good" : "again"));
@@ -743,9 +864,10 @@ function renderSessionEnd() {
     <div class="card"><div class="stat"><div><b>${n}/${ST.goal}</b><span>today's goal</span></div><div><b>🔥 ${s}</b><span>day streak</span></div></div>
     ${met ? '<p class="center small" style="margin:10px 0 0">Daily goal reached. See you tomorrow!</p>' : `<p class="center small muted" style="margin:10px 0 0">${ST.goal - n} more to reach today's goal.</p>`}</div>`);
   const lid = S.lid;
-  act(`${S.kind === "lesson" ? '<button class="btn" id="again">Practice again</button>' : ""}<button class="btn primary" id="done">Done</button>`);
-  $("done").onclick = () => { SESSION = null; go(lid && S.kind !== "daily" ? "#/lesson/" + lid : "#/today"); };
-  const ag = $("again"); if (ag) ag.onclick = () => startSession("lesson", buildLesson(lid), S.title, lid);
+  const again = S.kind === "lesson" || S.kind === "muscle";
+  act(`${again ? '<button class="btn" id="again">' + (S.kind === "muscle" ? "Another round" : "Practice again") + "</button>" : ""}<button class="btn primary" id="done">Done</button>`);
+  $("done").onclick = () => { SESSION = null; go(S.kind === "muscle" ? "#/muscle" : lid && S.kind !== "daily" ? "#/lesson/" + lid : "#/today"); };
+  const ag = $("again"); if (ag) ag.onclick = () => S.kind === "muscle" ? startMuscle(S.topic) : startSession("lesson", buildLesson(lid), S.title, lid);
 }
 
 // ------------------------------------------------------------------ router
@@ -763,6 +885,7 @@ function route() {
     case "cards": return renderCardsTab();
     case "more": return renderMore();
     case "ranks": return renderRanks();
+    case "muscle": return renderMuscle();
     default: return renderToday();
   }
 }
@@ -792,6 +915,8 @@ if ("serviceWorker" in navigator && (location.protocol === "https:" || ["localho
     D.modules = ld.modules; D.lessons = ld.lessons; D.bank = dd.lessons;
     D.lessons.forEach((l, i) => { D.byId[l.id] = l; D.idx[l.id] = i; });
     for (const [lid, L] of Object.entries(D.bank)) for (const it of L.drills.concat(L.cards)) { D.items[it.id] = it; D.lessonOf[it.id] = lid; }
+    D.mm = (dd.muscle && dd.muscle.topics) || [];
+    for (const T of D.mm) { D.mmById[T.id] = T; for (const it of T.drills.concat(T.cards)) { D.items[it.id] = it; D.topicOf[it.id] = T.id; } }
     ST = loadState();
     fetch("data/meta.json").then(r => r.json()).then(j => { META = j; }).catch(() => {});
     route();
@@ -803,5 +928,6 @@ if ("serviceWorker" in navigator && (location.protocol === "https:" || ["localho
 // hooks for automated tests
 window.PyLearn = {
   get state() { return ST; }, get session() { return SESSION; }, game, D, today, dayKey, keyOf, streak, buildDaily, hereId, unlocked, mastery, grade, offline,
+  buildMuscle, mmUnlocked, mmStats, topicReached, startMuscle,
   item: (id) => D.items[id], current: () => SESSION && D.items[SESSION.queue[SESSION.i]],
 };

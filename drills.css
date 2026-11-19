@@ -232,3 +232,16 @@ pre.code, .codebox { font-family: var(--mono); font-size: var(--codefs); line-he
 .rk.done .rk-xp small { color: var(--ok); }
 .xp-earned { font-weight: 800; font-size: 20px; color: #e39a1c; margin: 0 0 10px; }
 .xp-rules { padding-left: 20px; margin: 6px 0 10px; line-height: 1.55; }
+
+/* Muscle Memory deck */
+.mmcard { display: flex; align-items: center; gap: 12px; width: 100%; text-align: left; color: var(--text); cursor: pointer; font: inherit; }
+.mm-emoji { font-size: 30px; }
+.mm-topic.locked { opacity: .6; cursor: default; }
+.linkbtn#mmAll { display: block; margin: 0 auto 18px; }
+/* read-carefully nudges in practice rounds */
+.readnote { background: var(--accent-soft); border-left: 4px solid var(--accent); border-radius: 12px; padding: 9px 12px; margin: 0 0 10px; font-size: 14.5px; line-height: 1.4; }
+.readnote.breathe { background: var(--ok-soft); border-left-color: var(--ok); }
+.fb .reread { font-size: 14.5px; margin-top: 8px; }
+.choice.reading, .line.reading, .tile.reading { opacity: .55; }
+.hero .stat > div { background: rgba(255,255,255,.18); }
+.hero .stat span { color: rgba(255,255,255,.88); }
