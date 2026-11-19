@@ -520,6 +520,16 @@ async function doRun() {
     return r;
   } finally { setBusy(false); const b = $("run"); if (b) b.textContent = "▶ Run"; }
 }
+// ---------------------------------------------------------------- XP badge (rules in game.js)
+function gameNow() {
+  let st = null;
+  try { st = JSON.parse(localStorage.getItem(DRILL_KEY) || "null"); } catch (e) {}
+  st = st && typeof st === "object" ? st : {};
+  if (typeof st.xp !== "number") st = Object.assign({}, st, { xp: PyGame.backfill(st) });
+  return PyGame.summary(st, (id) => !!byId[id]);
+}
+function renderBadge() { if (S.lessons.length) PyGame.badge($("xpBadge"), gameNow()); }
+
 async function doCheck() {
   if (S.busy) return;
   const id = S.current, l = byId[id], res = $("result"), btn = $("check");
@@ -529,7 +539,16 @@ async function doCheck() {
   res.innerHTML = '<div class="out"><span class="dim">' + (runner.state === "ready" ? "Checking your code…" : "Starting Python (the first time can take a few seconds)…") + "</span></div>";
   try {
     const r = await runner.exec("check", { code, test: l.test }, l.web_timeout);
-    if (r.status === "pass" && !isDone(id)) { S.progress.completed.push(id); saveProgress(); }
+    let gained = 0, before = null, after = null;
+    if (r.status === "pass") {
+      before = gameNow();
+      if (!isDone(id)) { S.progress.completed.push(id); saveProgress(); }
+      PyGame.codingPass((x) => !!byId[x]);        // a passed lesson counts as today's goal (+ streak)
+      after = gameNow(); gained = after.xp - before.xp;
+      renderBadge();
+      if (gained) PyGame.floatXP(gained, $("xpBadge"));
+      if (after.rank.index > before.rank.index) setTimeout(() => PyGame.celebrate(after), 700);
+    }
     if (id !== S.current) { renderNav(); return r; }
     let h = "";
     if (r.status === "pass") h += '<div class="banner pass">✅ Correct! ' + inline(r.message || "") + "</div>";
@@ -539,7 +558,7 @@ async function doCheck() {
     res.innerHTML = h;
     res.scrollIntoView({ block: "nearest", behavior: "smooth" });
     if (r.status === "pass") {
-      toast("Lesson " + id + " complete!");
+      toast("Lesson " + id + " complete!" + (gained ? ` +${gained} XP` : "") + (after && after.streak ? ` · 🔥 ${after.streak}` : ""));
       renderNav();
       const t = document.querySelector("h2.title");
       if (t && !t.querySelector(".donemark")) t.insertAdjacentHTML("beforeend", ' <span class="donemark" style="color:var(--ok)">✓</span>');
@@ -582,12 +601,13 @@ $("importFile").onchange = async (e) => {
     openLesson(p.last && byId[p.last] ? p.last : S.lessons[0].id);
     closeDrawer();
     toast("Progress imported");
+    renderBadge();
   } catch (err) { toast("Couldn't import that file: " + err.message, true); }
 };
 $("resetAll").onclick = () => {
   if (!confirm("Erase ALL progress and saved code on this device? This can't be undone.\n\n(Tip: Export first to keep a backup.)")) return;
   S.progress = normProgress(null); saveProgress(); saveTimer = null;
-  openLesson(S.lessons[0].id); closeDrawer();
+  openLesson(S.lessons[0].id); closeDrawer(); renderBadge();
 };
 
 // ---------------------------------------------------------------- offline (service worker)
@@ -631,12 +651,13 @@ if ("serviceWorker" in navigator && (location.protocol === "https:" || ["localho
     let start = byId[fromHash] ? fromHash : S.progress.last && byId[S.progress.last] ? S.progress.last : null;
     if (!start) { const firstTodo = S.lessons.find(l => !isDone(l.id)); start = (firstTodo || S.lessons[0]).id; }
     openLesson(start);
+    renderBadge();
   } catch (e) {
     $("content").innerHTML = '<div class="banner fail">Could not load the lessons (' + esc(String(e.message || e)) + "). Check your connection and reload.</div>";
   }
 })();
 
 // hooks for automated tests and curious learners (browser console)
-window.PyLearn = { S, runner, offline, openLesson, doRun, doCheck,
+window.PyLearn = { S, runner, offline, openLesson, doRun, doCheck, gameNow,
   check: (id, code) => runner.exec("check", { code, test: byId[id].test }, byId[id].web_timeout),
   run: (code, timeout) => runner.exec("run", { code }, timeout || S.data.default_timeout) };

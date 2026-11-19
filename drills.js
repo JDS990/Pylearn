@@ -24,7 +24,7 @@ function keyOf(n) { return new Date(n * 864e5).toISOString().slice(0, 10); }
 function today() { return dayNum(dayKey()); }
 
 // ------------------------------------------------------------------ storage
-function blankState() { return { v: 1, items: {}, days: {}, met: {}, goal: 10, here: null, best: 0 }; }
+function blankState() { return { v: 1, items: {}, days: {}, met: {}, goal: 10, here: null, best: 0, xp: 0 }; }
 function normState(d) {
   const s = blankState();
   if (!d || typeof d !== "object") return s;
@@ -40,10 +40,18 @@ function normState(d) {
   if ([5, 10, 15, 20].includes(d.goal)) s.goal = d.goal;
   if (typeof d.here === "string") s.here = d.here;
   if (typeof d.best === "number") s.best = d.best;
+  // XP: kept if present; state saved before XP existed gets a one-time estimate from its
+  // history (pure function of the state, so loading it again gives the same number).
+  if (typeof d.xp === "number" && isFinite(d.xp)) { s.xp = Math.max(0, Math.round(d.xp)); if (typeof d.xpBackfill === "number") s.xpBackfill = d.xpBackfill; }
+  else { s.xp = PyGame.backfill(s); s.xpBackfill = s.xp; }
   return s;
 }
 function loadState() {
-  try { return normState(JSON.parse(localStorage.getItem(DRILL_KEY) || "null")); } catch (e) { return blankState(); }
+  let raw = null;
+  try { raw = JSON.parse(localStorage.getItem(DRILL_KEY) || "null"); } catch (e) {}
+  const s = normState(raw);
+  if (raw && typeof raw === "object" && typeof raw.xp !== "number") { ST = s; saveState(); }   // persist the backfill once
+  return s;
 }
 function saveState() {
   try { localStorage.setItem(DRILL_KEY, JSON.stringify(ST)); return true; }
@@ -80,6 +88,28 @@ function streak() {
   return s;
 }
 function doneToday() { return ST.days[dayKey()] || 0; }
+
+// ------------------------------------------------------------------ XP + ranks (rules in game.js)
+function game() { return PyGame.summary(ST, (id) => !!D.byId[id]); }
+function renderBadge() { PyGame.badge($("streakChip"), game()); }
+function addXP(n, near) {
+  if (!n) return;
+  const before = game().rank.index;
+  ST.xp = (ST.xp || 0) + n;
+  saveState();
+  PyGame.floatXP(n, near);
+  renderBadge();
+  const g = game();
+  if (g.rank.index > before) setTimeout(() => PyGame.celebrate(g), 650);
+}
+// XP for one answer (call BEFORE grade() so "already answered today" is known)
+function xpFor(it, ok, firstInSession) {
+  const r = rec(it.id), repeat = !!(r && r.last === today());
+  const R = PyGame.RULES;
+  if (it.type === "card") return firstInSession && !repeat ? R.card : R.card_repeat;
+  if (!ok) return 0;
+  return firstInSession && !repeat ? R.drill : R.drill_retry;
+}
 
 // ------------------------------------------------------------------ course position
 function lessonItems(lid) { const L = D.bank[lid]; return L ? L.drills.concat(L.cards) : []; }
@@ -266,7 +296,7 @@ function setBar({ title, back, session } = {}) {
   document.body.classList.toggle("in-session", !!session);
   $("sessProg").classList.toggle("hidden", !session);
   $("actbar").classList.toggle("hidden", !session);
-  $("streakChip").querySelector("b").textContent = streak();
+  renderBadge();
 }
 function setTab(name) { for (const b of document.querySelectorAll("#tabs button")) b.classList.toggle("on", b.dataset.tab === name); }
 for (const b of document.querySelectorAll("#tabs button")) b.onclick = () => go("#/" + b.dataset.tab);
@@ -300,6 +330,7 @@ function renderToday() {
       <button class="btn primary" id="startDaily">${met ? "Bonus round" : n ? "Continue daily review" : "Start daily review"}<span class="small" style="opacity:.75">· ${goal}</span></button>
       <div class="week">${week}</div>
     </div>
+    ${rankCard()}
     <div class="card here">
       <span class="badge">You are here</span>
       <div class="crumb" style="margin-top:8px">Module ${esc(hl.module)} · Lesson ${esc(here)}</div>
@@ -326,7 +357,42 @@ function renderToday() {
   $("hereDrills").onclick = () => { startSession("lesson", buildLesson(here), "Lesson " + here, here); };
   $("hereOpen").onclick = () => go("#/lesson/" + here);
   $("goCards").onclick = () => go("#/cards");
+  $("rankCard").onclick = () => go("#/ranks");
   for (const b of document.querySelectorAll(".list-btn[data-lid]")) b.onclick = () => startSession("lesson", buildLesson(b.dataset.lid), "Lesson " + b.dataset.lid, b.dataset.lid);
+}
+
+function rankCard() {
+  const g = game();
+  return `<button class="card rankcard" id="rankCard">
+      <span class="rk-emoji">${g.rank.emoji}</span>
+      <span class="grow"><span class="rk-name">${esc(g.rank.name)}</span> <span class="muted small">· ${g.xp} XP</span>
+        <div class="bar gold"><div style="width:${Math.round(100 * g.rank.progress)}%"></div></div>
+        <span class="muted small">${g.rank.next ? `${g.rank.to_next} XP to ${esc(g.rank.next)}` : "Top rank reached!"}</span></span>
+      <span class="chev">›</span></button>`;
+}
+
+// ------------------------------------------------------------------ Ranks
+function renderRanks() {
+  setBar({ title: "Ranks", back: () => history.length > 1 ? history.back() : go("#/today") }); setTab("today");
+  const g = game(), R = PyGame.RULES;
+  view(`
+    <div class="card center rank-hero">
+      <div class="big-emoji">${g.rank.emoji}</div>
+      <div class="end-title">${esc(g.rank.name)}</div>
+      <div class="muted">${g.xp} XP${g.rank.next ? ` · ${g.rank.to_next} to ${esc(g.rank.next)}` : " · top rank!"}</div>
+      <div class="bar gold" style="margin:12px 0 4px"><div style="width:${Math.round(100 * g.rank.progress)}%"></div></div>
+      <div class="stat" style="margin-top:12px"><div><b>🔥 ${g.streak}</b><span>day streak</span></div><div><b>${g.best}</b><span>best streak</span></div><div><b>${g.lessons}</b><span>coding lessons</span></div></div>
+    </div>
+    <div class="ranklist">${PyGame.RANKS.map((r, i) => `<div class="rk ${i < g.rank.index ? "done" : i === g.rank.index ? "cur" : "locked"}" data-rank="${i}">
+      <span class="rk-emoji">${i > g.rank.index ? "🔒" : r.emoji}</span>
+      <span class="grow"><b>${esc(r.name)}</b><span class="muted small">${esc(r.desc)}</span></span>
+      <span class="rk-xp">${r.xp} XP<small>${i < g.rank.index ? "✓ unlocked" : i === g.rank.index ? "★ you" : `${r.xp - g.xp} to go`}</small></span></div>`).join("")}</div>
+    <div class="card"><h3>How to earn XP</h3><ul class="small xp-rules">
+      <li>Right answer: <b>+${R.drill}</b> (after a miss, or again the same day: +${R.drill_retry})</li>
+      <li>Flashcard review: <b>+${R.card}</b> (same card again today: +${R.card_repeat})</li>
+      <li>Daily goal: <b>+${R.daily_bonus}</b> and your 🔥 streak grows</li>
+      <li>Coding lesson, first time you pass it: <b>+${R.lesson}</b>. Passing one also counts as today's goal.</li></ul>
+      <div class="muted small">The desktop app keeps its own XP and streak. The rules and ranks are the same.</div></div>`);
 }
 
 // ------------------------------------------------------------------ Lessons list
@@ -430,6 +496,7 @@ function renderMore() {
   setBar({ title: "More" }); setTab("more");
   const cp = codingProgress();
   view(`
+    <button class="list-btn card" id="moreRanks" style="width:100%;padding:12px 16px;border:1px solid var(--border)"><span class="grow"><b>🏆 Ranks</b><div class="muted small">All ${PyGame.RANKS.length} ranks and how to earn XP</div></span><span class="chev">›</span></button>
     <div class="card"><h3>Daily goal</h3><div class="muted small" style="margin-bottom:10px">How many drills and cards to answer each day to keep your streak.</div>
       <div class="seg">${[5, 10, 15, 20].map(g => `<button data-goal="${g}" class="${ST.goal === g ? "on" : ""}">${g}</button>`).join("")}</div></div>
     <div class="card"><h3>⌨️ Coding lessons</h3><div class="muted small">The original lessons where you write and run real Python. ${cp.completed.length} of ${D.lessons.length} complete.</div>
@@ -444,6 +511,7 @@ function renderMore() {
   `);
   for (const b of document.querySelectorAll("[data-goal]")) b.onclick = () => { ST.goal = +b.dataset.goal; saveState(); renderMore(); };
   $("exportBtn").onclick = exportAll;
+  $("moreRanks").onclick = () => go("#/ranks");
   $("importBtn").onclick = () => $("importFile").click();
   $("resetDrills").onclick = () => {
     if (!confirm("Erase drill, flashcard and streak progress on this device? Coding lessons are kept.\n\n(Tip: Export first to keep a backup.)")) return;
@@ -475,7 +543,7 @@ async function checkPyodide() {
 function exportAll() {
   const cp = codingProgress().raw;
   const data = { app: "PyLearn", format: 2, exported: new Date().toISOString(),
-    completed: Array.isArray(cp.completed) ? cp.completed : [], code: cp.code && typeof cp.code === "object" ? cp.code : {}, last: cp.last || null, drills: ST };
+    completed: Array.isArray(cp.completed) ? cp.completed : [], code: cp.code && typeof cp.code === "object" ? cp.code : {}, last: cp.last || null, drills: ST, game: (() => { const g = game(); return { xp: g.xp, rank: g.rank.name, streak: g.streak, best: g.best }; })() };
   const blob = new Blob([JSON.stringify(data, null, 1)], { type: "application/json" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
@@ -537,15 +605,19 @@ function feedback(ok, it, extra = "") {
 function record(it, ok, rating) {
   const S = SESSION;
   S.answered = true;
-  if (!(it.id in S.first)) {
+  const first = !(it.id in S.first);
+  const xp = xpFor(it, ok, first);
+  if (first) {
     S.first[it.id] = ok;
     grade(it.id, rating || (ok ? "good" : "again"));
     if (!ok && !S.retry.has(it.id)) { S.retry.add(it.id); S.queue.push(it.id); }   // missed: see it once more at the end
   }
-  $("streakChip").querySelector("b").textContent = streak();
+  S.xp = (S.xp || 0) + xp;
+  addXP(xp, document.querySelector(".fb h4") || $("streakChip"));
+  if (justMet) { S.xp += PyGame.RULES.daily_bonus; addXP(PyGame.RULES.daily_bonus, $("streakChip")); }
   act(`<button class="btn ${ok ? "ok" : "primary"}" id="next">${S.i + 1 >= S.queue.length ? "Finish" : "Continue"}</button>`);
   $("next").onclick = nextItem;
-  if (justMet) { justMet = false; setTimeout(() => toast(`🔥 Daily goal reached! ${streak()}-day streak`), 400); }
+  if (justMet) { justMet = false; setTimeout(() => toast(`🔥 Daily goal reached! ${streak()}-day streak · +${PyGame.RULES.daily_bonus} XP`), 400); }
 }
 function nextItem() { SESSION.i++; renderSession(); }
 
@@ -666,6 +738,7 @@ function renderSessionEnd() {
   view(`<div class="big-emoji">${pct >= 0.9 ? "🏆" : pct >= 0.6 ? "💪" : "🌱"}</div>
     <div class="end-title">${pct >= 0.9 ? "Excellent!" : pct >= 0.6 ? "Good work!" : "Every miss is practice!"}</div>
     <p class="center muted">${right} of ${ids.length} right on the first try${S.retry.size ? `. The ${S.retry.size} you missed will come back sooner.` : "."}</p>
+    <p class="center xp-earned">+${S.xp || 0} XP</p>
     <div class="card"><div class="stat"><div><b>${n}/${ST.goal}</b><span>today's goal</span></div><div><b>🔥 ${s}</b><span>day streak</span></div></div>
     ${met ? '<p class="center small" style="margin:10px 0 0">Daily goal reached. See you tomorrow!</p>' : `<p class="center small muted" style="margin:10px 0 0">${ST.goal - n} more to reach today's goal.</p>`}</div>`);
   const lid = S.lid;
@@ -688,10 +761,12 @@ function route() {
     case "read": return renderRead(arg);
     case "cards": return renderCardsTab();
     case "more": return renderMore();
+    case "ranks": return renderRanks();
     default: return renderToday();
   }
 }
 window.addEventListener("hashchange", route);
+$("streakChip").onclick = () => { if (!SESSION) go("#/ranks"); };
 window.addEventListener("storage", (e) => { if (e.key === DRILL_KEY && !SESSION) { ST = loadState(); route(); } });
 
 // ------------------------------------------------------------------ offline (service worker)
@@ -726,6 +801,6 @@ if ("serviceWorker" in navigator && (location.protocol === "https:" || ["localho
 
 // hooks for automated tests
 window.PyLearn = {
-  get state() { return ST; }, get session() { return SESSION; }, D, today, dayKey, keyOf, streak, buildDaily, hereId, unlocked, mastery, grade, offline,
+  get state() { return ST; }, get session() { return SESSION; }, game, D, today, dayKey, keyOf, streak, buildDaily, hereId, unlocked, mastery, grade, offline,
   item: (id) => D.items[id], current: () => SESSION && D.items[SESSION.queue[SESSION.i]],
 };
