@@ -543,7 +543,7 @@ async function checkPyodide() {
 function exportAll() {
   const cp = codingProgress().raw;
   const data = { app: "PyLearn", format: 2, exported: new Date().toISOString(),
-    completed: Array.isArray(cp.completed) ? cp.completed : [], code: cp.code && typeof cp.code === "object" ? cp.code : {}, last: cp.last || null, drills: ST, game: (() => { const g = game(); return { xp: g.xp, rank: g.rank.name, streak: g.streak, best: g.best }; })() };
+    completed: Array.isArray(cp.completed) ? cp.completed : [], code: cp.code && typeof cp.code === "object" ? cp.code : {}, last: cp.last || null, gates: Array.isArray(cp.gates) ? cp.gates : [], drills: ST, game: (() => { const g = game(); return { xp: g.xp, rank: g.rank.name, streak: g.streak, best: g.best }; })() };
   const blob = new Blob([JSON.stringify(data, null, 1)], { type: "application/json" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
@@ -561,11 +561,12 @@ $("importFile").onchange = async (e) => {
     const completed = Array.isArray(raw.completed) ? [...new Set(raw.completed.filter(id => typeof id === "string" && D.byId[id]))] : [];
     const code = {};
     if (raw.code && typeof raw.code === "object") for (const [k, v] of Object.entries(raw.code)) if (D.byId[k] && typeof v === "string") code[k] = v;
+    const gates = Array.isArray(raw.gates) ? [...new Set(raw.gates.filter(id => typeof id === "string" && D.byId[id]))] : [];
     const drills = raw.drills ? normState(raw.drills) : null;
     const msg = `Replace your progress on this device with the file's?\n\nCoding: ${completed.length} lessons complete, code for ${Object.keys(code).length}.` +
       (drills ? `\nDrills: ${Object.keys(drills.items).length} practiced, ${Object.keys(drills.met).length} goal days.` : "\n(No drill progress in this file; yours is kept.)");
     if (!confirm(msg)) return;
-    localStorage.setItem(PROG_KEY, JSON.stringify({ completed, code, last: D.byId[raw.last] ? raw.last : null }));
+    localStorage.setItem(PROG_KEY, JSON.stringify({ completed, code, last: D.byId[raw.last] ? raw.last : null, gates }));
     if (drills) { ST = drills; saveState(); }
     toast("Progress imported");
     route();

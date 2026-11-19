@@ -13,11 +13,12 @@ const $ = (id) => document.getElementById(id);
 
 // ---------------------------------------------------------------- storage
 function normProgress(d) {
-  const p = { completed: [], code: {}, last: null };
+  const p = { completed: [], code: {}, last: null, gates: [] };
   if (d && typeof d === "object") {
     if (Array.isArray(d.completed)) p.completed = [...new Set(d.completed.filter(x => typeof x === "string"))];
     if (d.code && typeof d.code === "object") for (const [k, v] of Object.entries(d.code)) if (typeof v === "string") p.code[k] = v;
     if (typeof d.last === "string") p.last = d.last;
+    if (Array.isArray(d.gates)) p.gates = [...new Set(d.gates.filter(x => typeof x === "string"))];
   }
   return p;
 }
@@ -288,7 +289,11 @@ function openLesson(id) {
     </div>
     <div class="card" id="taskCard">
       <h3>Your turn</h3>
-      <div class="md">${md(l.task)}</div>
+      <div class="readtip" id="readTip"><b>👀 Read carefully:</b> <span>${esc(PyCareful.tipFor(idx))}</span></div>
+      <div class="md" id="taskBox">${md(l.task)}</div>
+      <div id="gateBox"></div>
+      <div class="lockwrap" id="workArea">
+      <div class="lockveil" id="lockVeil">🔒 Answer the question above to unlock the editor.</div>
       <div class="keybar" id="keybar" aria-label="Coding keys"></div>
       <div class="editor"><div class="gutter" id="gutter">1</div><textarea class="code" id="editor" aria-label="Your code"
         spellcheck="false" autocapitalize="off" autocomplete="off" autocorrect="off" data-gramm="false" wrap="off" enterkeyhint="enter"></textarea></div>
@@ -303,6 +308,7 @@ function openLesson(id) {
       <div class="kbd">Ctrl+Enter run · Ctrl+Shift+Enter check · Tab indents</div>
       <div id="hintBox" class="banner info md hidden"></div>
       <div id="solBox" class="hidden"><pre class="code"></pre><button class="b small" id="useSol">Put solution in the editor</button></div>
+      </div>
       <div id="result"></div>
     </div>
     <div class="navrow">
@@ -330,8 +336,36 @@ function openLesson(id) {
   if (next) $("next").onclick = () => { openLesson(next.id); };
   window.scrollTo(0, 0);
   renderNav();
+  setupGate(l);
   setBusy(S.busy);
   S.progress.last = id; saveProgress();
+}
+// ---------------------------------------------------------------- read-the-task gate (careful.js)
+function isUnlocked(id) {
+  const l = byId[id];
+  return isDone(id) || S.progress.gates.includes(id) || !(l && l.gate && l.gate.length);
+}
+function setLocked(locked) {
+  S.locked = locked;
+  const w = $("workArea"), ed = $("editor");
+  if (!w) return;
+  w.classList.toggle("locked", locked);
+  ed.readOnly = locked;
+  w.querySelectorAll("button").forEach(b => { if (!b.dataset.breath) b.disabled = locked || (S.busy && ["run", "check"].includes(b.id)); });
+}
+function setupGate(l) {
+  const box = $("gateBox");
+  if (isUnlocked(l.id)) { box.className = "hidden"; setLocked(false); return; }
+  setLocked(true);
+  PyCareful.renderGate(box, l, {
+    taskEl: $("taskBox"),
+    onPass: () => {
+      if (!S.progress.gates.includes(l.id)) S.progress.gates.push(l.id);   // no XP: it's a habit, not a score
+      saveProgress();
+      setLocked(false);
+      setTimeout(() => { const g = $("gateBox"); if (S.current === l.id && g) { g.className = "gate passed"; g.innerHTML = "<h4>✓ Nice: you read the task. The editor is unlocked.</h4>"; } }, 700);
+    },
+  });
 }
 function setEditor(text) { const ed = $("editor"); ed.value = text; changed(); }
 
@@ -446,6 +480,7 @@ function setupEditor(ed) {
   ed.addEventListener("input", () => { fixSmartQuotes(ed); changed(); });
   ed.addEventListener("keydown", e => {
     if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); e.shiftKey ? doCheck() : doRun(); return; }
+    if (S.locked) return;
     const v = ed.value, s = ed.selectionStart, en = ed.selectionEnd;
     if (e.key === "Tab") { e.preventDefault(); indent(ed, e.shiftKey); return; }
     if (e.key === "Enter" && !e.shiftKey && !e.altKey && !e.isComposing) {
@@ -472,7 +507,10 @@ function editorCode() { const ed = $("editor"); fixSmartQuotes(ed); return ed.va
 // ---------------------------------------------------------------- run / check
 function setBusy(b) {
   S.busy = b;
-  for (const id of ["run", "check", "runEx"]) { const el = $(id); if (el) el.disabled = b; }
+  for (const id of ["run", "check", "runEx"]) {
+    const el = $(id);
+    if (el && !el.dataset.breath) el.disabled = b || (S.locked && id !== "runEx");
+  }
   const st = $("stop"); if (st) st.classList.toggle("hidden", !b);
 }
 function showOutput(box, r) {
@@ -505,7 +543,7 @@ async function runExample(l) {
   finally { setBusy(false); btn.textContent = old; }
 }
 async function doRun() {
-  if (S.busy) return;
+  if (S.busy || S.locked) return;
   flushSave();
   const l = byId[S.current], res = $("result");
   res.innerHTML = '<div class="out" id="runOut"></div><div id="explain"></div>';
@@ -531,8 +569,9 @@ function gameNow() {
 function renderBadge() { if (S.lessons.length) PyGame.badge($("xpBadge"), gameNow()); }
 
 async function doCheck() {
-  if (S.busy) return;
   const id = S.current, l = byId[id], res = $("result"), btn = $("check");
+  if (S.busy || S.locked || !btn || btn.dataset.breath) return;
+  let breath = false;
   const code = editorCode();
   S.progress.code[id] = code; clearTimeout(saveTimer); saveTimer = null; saveProgress();
   setBusy(true); btn.textContent = "Checking…";
@@ -552,10 +591,22 @@ async function doCheck() {
     if (id !== S.current) { renderNav(); return r; }
     let h = "";
     if (r.status === "pass") h += '<div class="banner pass">✅ Correct! ' + inline(r.message || "") + "</div>";
-    else h += '<div class="banner fail">❌ ' + inline(r.message || "Not yet.") + "</div>";
+    let nud = null;
+    if (r.status !== "pass" && !r.stopped) {
+      // point back at the task line this failure is about
+      nud = PyCareful.nudge(l.task, r);
+      h += '<div class="banner fail">' + PyCareful.nudgeHTML(nud) + "❌ " + inline(r.message || "Not yet.") + "</div>";
+      breath = PyCareful.recordFail(id);
+      if (breath) h += PyCareful.breatheHTML();
+    } else if (r.status !== "pass") h += '<div class="banner fail">❌ ' + inline(r.message || "Not yet.") + "</div>";
     if (r.explanation) h += '<div class="banner info md">' + inline(r.explanation) + "</div>";
     if (r.stdout || r.stderr) h += '<div class="out">' + esc(r.stdout || "") + '<span class="err">' + esc(r.stderr || "") + "</span></div>";
     res.innerHTML = h;
+    if (nud) {
+      PyCareful.flash($("taskBox"), nud.search, false);
+      const a = res.querySelector(".nudge-link");
+      if (a) a.onclick = () => PyCareful.flash($("taskBox"), nud.search);
+    }
     res.scrollIntoView({ block: "nearest", behavior: "smooth" });
     if (r.status === "pass") {
       toast("Lesson " + id + " complete!" + (gained ? ` +${gained} XP` : "") + (after && after.streak ? ` · 🔥 ${after.streak}` : ""));
@@ -564,7 +615,10 @@ async function doCheck() {
       if (t && !t.querySelector(".donemark")) t.insertAdjacentHTML("beforeend", ' <span class="donemark" style="color:var(--ok)">✓</span>');
     }
     return r;
-  } finally { setBusy(false); const b = $("check"); if (b) b.textContent = "✔ Check"; }
+  } finally {
+    setBusy(false); const b = $("check"); if (b) b.textContent = "✔ Check";
+    if (breath && b && S.current === id) PyCareful.pause(b, "✔ Check");   // soft 5 s pause, not a lockout
+  }
 }
 function toast(msg, warn) {
   const t = $("toast"); t.textContent = msg; t.classList.toggle("warn", !!warn); t.classList.add("show");
@@ -595,6 +649,7 @@ $("importFile").onchange = async (e) => {
     const p = normProgress(raw);
     p.completed = p.completed.filter(id => byId[id]);
     for (const k of Object.keys(p.code)) if (!byId[k]) delete p.code[k];
+    p.gates = p.gates.filter(id => byId[id]);
     if (!confirm(`Replace your progress on this device with the file's? (${p.completed.length} lessons complete, code for ${Object.keys(p.code).length} lessons${raw.drills ? ", plus drill progress" : ""})`)) return;
     S.progress = p; saveProgress();
     if (raw.drills && typeof raw.drills === "object") localStorage.setItem(DRILL_KEY, JSON.stringify(raw.drills));
@@ -645,6 +700,7 @@ if ("serviceWorker" in navigator && (location.protocol === "https:" || ["localho
     if (!r.ok) throw new Error("HTTP " + r.status);
     S.data = await r.json();
     S.modules = S.data.modules; S.lessons = S.data.lessons;
+    PyCareful.injectCSS();
     S.lessons.forEach(l => byId[l.id] = l);
     S.progress = loadProgress();
     const fromHash = decodeURIComponent(location.hash.slice(1));
