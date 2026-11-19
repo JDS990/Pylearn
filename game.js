@@ -32,6 +32,28 @@ const PyGame = (() => {
     }
     return xp + R.daily_bonus * Object.keys(st.met || {}).length;
   }
+  // XP is derived, so syncing with the desktop can't double count it:
+  //   phone XP = this device's drill/card XP (st.dxp) + other devices' drill XP (st.peerXp,
+  //              from sync) + daily bonus x goal-met days (st.met, any device)
+  //   total    = phone XP + lesson XP x coding lessons completed
+  // st.xp is kept as "phone XP" for older versions / backups. State saved before this
+  // version only had a running st.xp (bonuses included): its drill part becomes st.dxp.
+  const metCount = (st) => Object.keys(st.met || {}).filter(k => st.met[k]).length;
+  function phoneXp(st) {
+    let peers = 0;
+    for (const v of Object.values(st.peerXp || {})) if (typeof v === "number" && v > 0) peers += v;
+    return (st.dxp || 0) + peers + R.daily_bonus * metCount(st);
+  }
+  function normXp(st) {     // in place; idempotent
+    if (typeof st.dxp !== "number" || !isFinite(st.dxp)) {
+      const legacy = typeof st.xp === "number" && isFinite(st.xp) ? st.xp : backfill(st);
+      st.dxp = Math.max(0, Math.round(legacy - R.daily_bonus * metCount(st)));
+    }
+    if (!st.peerXp || typeof st.peerXp !== "object") st.peerXp = {};
+    if (typeof st.dev !== "string" || !/^phone-[a-z0-9]{6,12}$/.test(st.dev)) st.dev = "phone-" + Math.random().toString(36).slice(2, 10).padEnd(8, "0");
+    st.xp = phoneXp(st);
+    return st;
+  }
   function codingDone(validIds) {
     try {
       const p = JSON.parse(localStorage.getItem(PROG_KEY) || "null") || {};
@@ -42,9 +64,10 @@ const PyGame = (() => {
   // Total = XP earned on the phone (drills, cards, daily bonuses) + coding lessons completed.
   function summary(st, validIds) {
     const lessons = codingDone(validIds).length;
-    const xp = (st.xp || 0) + R.lesson * lessons;
+    const own = typeof st.dxp === "number" ? phoneXp(st) : phoneXp(normXp(JSON.parse(JSON.stringify(st || {}))));
+    const xp = own + R.lesson * lessons;
     const s = streak(st.met || {});
-    return { xp, drillXp: st.xp || 0, lessonXp: R.lesson * lessons, lessons, rank: rankFor(xp), streak: s,
+    return { xp, drillXp: own, lessonXp: R.lesson * lessons, lessons, rank: rankFor(xp), streak: s,
       best: Math.max(st.best || 0, s), todayMet: !!(st.met || {})[dayKey()] };
   }
   // Used by the coding page: passing a lesson meets today's goal (like on the desktop).
@@ -53,10 +76,12 @@ const PyGame = (() => {
     try { st = JSON.parse(localStorage.getItem(DRILL_KEY) || "null"); } catch (e) { st = null; }
     if (!st || typeof st !== "object") st = { v: 1, items: {}, days: {}, met: {}, goal: 10, here: null, best: 0 };
     st.met = st.met && typeof st.met === "object" ? st.met : {};
-    if (typeof st.xp !== "number") { st.xp = backfill(st); st.xpBackfill = st.xp; }
+    if (typeof st.xp !== "number" && typeof st.dxp !== "number") { st.xp = backfill(st); st.xpBackfill = st.xp; }
+    normXp(st);                    // before today is marked, so an old running total converts correctly
     const k = dayKey();
     let bonus = 0;
-    if (!st.met[k]) { st.met[k] = 1; st.xp += R.daily_bonus; bonus = R.daily_bonus; }
+    if (!st.met[k]) { st.met[k] = 1; bonus = R.daily_bonus; }
+    normXp(st);
     st.best = Math.max(st.best || 0, streak(st.met));
     try { localStorage.setItem(DRILL_KEY, JSON.stringify(st)); } catch (e) {}
     return { bonus, state: st, game: summary(st, validIds) };
@@ -112,5 +137,5 @@ const PyGame = (() => {
     f.style.left = Math.max(10, Math.min(innerWidth - 90, r.right - 80)) + "px"; f.style.top = Math.max(50, r.top) + "px";
     document.body.appendChild(f); setTimeout(() => f.remove(), 1100);
   }
-  return { RULES: R, RANKS, rankFor, streak, backfill, summary, codingPass, badge, celebrate, floatXP, dayKey };
+  return { RULES: R, RANKS, rankFor, streak, backfill, summary, codingPass, normXp, phoneXp, badge, celebrate, floatXP, dayKey };
 })();

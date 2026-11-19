@@ -19,6 +19,9 @@ function normProgress(d) {
     if (d.code && typeof d.code === "object") for (const [k, v] of Object.entries(d.code)) if (typeof v === "string") p.code[k] = v;
     if (typeof d.last === "string") p.last = d.last;
     if (Array.isArray(d.gates)) p.gates = [...new Set(d.gates.filter(x => typeof x === "string"))];
+    // edit times (ms) let sync with the desktop keep the newest code / last lesson
+    if (d.code_t && typeof d.code_t === "object") { p.code_t = {}; for (const [k, v] of Object.entries(d.code_t)) if (typeof v === "number" && v >= 0) p.code_t[k] = v; }
+    if (typeof d.last_t === "number") p.last_t = d.last_t;
   }
   return p;
 }
@@ -26,7 +29,16 @@ function loadProgress() {
   try { return normProgress(JSON.parse(localStorage.getItem(STORE_KEY) || "null")); }
   catch (e) { return normProgress(null); }
 }
-function saveProgress() {
+function saveProgress(pushSoon) {
+  // stamp what changed since the last save (sync keeps the newest edit of each lesson's code)
+  let old = null;
+  try { old = JSON.parse(localStorage.getItem(STORE_KEY) || "null"); } catch (e) {}
+  old = old && typeof old === "object" ? old : {};
+  const now = Date.now(), oc = old.code && typeof old.code === "object" ? old.code : {};
+  S.progress.code_t = S.progress.code_t || {};
+  for (const [k, v] of Object.entries(S.progress.code)) if (oc[k] !== v) S.progress.code_t[k] = now;
+  if ((old.last || null) !== (S.progress.last || null)) S.progress.last_t = now;
+  if (typeof PySync !== "undefined") PySync.dirty(pushSoon ? 2000 : 30000);
   try { localStorage.setItem(STORE_KEY, JSON.stringify(S.progress)); return true; }
   catch (e) { toast("Couldn't save progress on this device (storage full or blocked).", true); return false; }
 }
@@ -339,6 +351,7 @@ function openLesson(id) {
   setupGate(l);
   setBusy(S.busy);
   S.progress.last = id; saveProgress();
+  S.loaded = { id, code: $("editor") ? $("editor").value : null };   // what the editor showed when opened (sync: did you type since?)
 }
 // ---------------------------------------------------------------- read-the-task gate (careful.js)
 function isUnlocked(id) {
@@ -581,8 +594,9 @@ async function doCheck() {
     let gained = 0, before = null, after = null;
     if (r.status === "pass") {
       before = gameNow();
-      if (!isDone(id)) { S.progress.completed.push(id); saveProgress(); }
+      if (!isDone(id)) { S.progress.completed.push(id); saveProgress(true); }
       PyGame.codingPass((x) => !!byId[x]);        // a passed lesson counts as today's goal (+ streak)
+      PySync.dirty(2000);                         // lesson passed: sync in a moment
       after = gameNow(); gained = after.xp - before.xp;
       renderBadge();
       if (gained) PyGame.floatXP(gained, $("xpBadge"));
@@ -660,7 +674,7 @@ $("importFile").onchange = async (e) => {
   } catch (err) { toast("Couldn't import that file: " + err.message, true); }
 };
 $("resetAll").onclick = () => {
-  if (!confirm("Erase ALL progress and saved code on this device? This can't be undone.\n\n(Tip: Export first to keep a backup.)")) return;
+  if (!confirm("Erase ALL progress and saved code on this device? This can't be undone.\n\n(Tip: Export first to keep a backup.)" + (PySync.connected() ? "\n\nSync is on: the next sync brings your synced progress back. To really start over, Disconnect sync first (Drills → More)." : ""))) return;
   S.progress = normProgress(null); saveProgress(); saveTimer = null;
   openLesson(S.lessons[0].id); closeDrawer(); renderBadge();
 };
@@ -693,6 +707,26 @@ if ("serviceWorker" in navigator && (location.protocol === "https:" || ["localho
   $("offlineNote").textContent = "Offline mode needs https (or localhost). Progress is stored on this device.";
 }
 
+// ---------------------------------------------------------------- sync with the desktop (sync.js)
+function onSynced() {
+  const cur = S.current, ed = $("editor"), lastBefore = S.progress.last;
+  const typed = !!(ed && cur && S.loaded && S.loaded.id === cur && ed.value !== S.loaded.code);   // you edited since opening
+  const p = loadProgress();
+  if (typed) p.code[cur] = ed.value;                     // never throw away what you're typing
+  S.progress = p;
+  if (!typed && cur && p.last && p.last !== lastBefore && cur === lastBefore && byId[p.last]) {
+    openLesson(p.last); toast("Picked up where you left off on the desktop: lesson " + p.last);
+  } else if (!typed && cur && ed && typeof p.code[cur] === "string" && p.code[cur] !== ed.value) {
+    openLesson(cur); toast("Code updated from the desktop");
+  } else renderNav();
+  renderBadge();
+}
+function onSyncStatus(st) {
+  const el = $("syncNote"); if (!el) return;
+  el.classList.toggle("hidden", !st.connected);
+  el.innerHTML = `<a href="index.html#/more">🔄 ${esc(st.text)}</a>`;
+}
+
 // ---------------------------------------------------------------- start
 (async function init() {
   try {
@@ -708,12 +742,14 @@ if ("serviceWorker" in navigator && (location.protocol === "https:" || ["localho
     if (!start) { const firstTodo = S.lessons.find(l => !isDone(l.id)); start = (firstTodo || S.lessons[0]).id; }
     openLesson(start);
     renderBadge();
+    onSyncStatus(PySync.status());
+    PySync.init({ onChange: onSynced, onStatus: onSyncStatus });   // pull on open (if sync is set up)
   } catch (e) {
     $("content").innerHTML = '<div class="banner fail">Could not load the lessons (' + esc(String(e.message || e)) + "). Check your connection and reload.</div>";
   }
 })();
 
 // hooks for automated tests and curious learners (browser console)
-window.PyLearn = { S, runner, offline, openLesson, doRun, doCheck, gameNow,
+window.PyLearn = { S, runner, offline, openLesson, doRun, doCheck, gameNow, sync: PySync,
   check: (id, code) => runner.exec("check", { code, test: byId[id].test }, byId[id].web_timeout),
   run: (code, timeout) => runner.exec("run", { code }, timeout || S.data.default_timeout) };

@@ -245,3 +245,17 @@ pre.code, .codebox { font-family: var(--mono); font-size: var(--codefs); line-he
 .choice.reading, .line.reading, .tile.reading { opacity: .55; }
 .hero .stat > div { background: rgba(255,255,255,.18); }
 .hero .stat span { color: rgba(255,255,255,.88); }
+/* sync with the desktop */
+.syncline { display: flex; align-items: center; gap: 8px; width: 100%; background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 10px 14px; margin: 0 0 14px; color: var(--muted); font: 500 14px var(--sans); cursor: pointer; text-align: left; }
+.syncline span:nth-child(2) { flex: 1; }
+.sdot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex: none; margin-right: 6px; vertical-align: middle; }
+.sdot.ok { background: var(--ok); } .sdot.wait { background: var(--warn); } .sdot.bad { background: var(--bad); }
+#syncCard .steps { margin: 10px 0 6px; padding-left: 22px; font-size: 14.5px; line-height: 1.55; }
+#syncCard .steps li { margin: 5px 0; } #syncCard .steps a { word-break: break-all; }
+#syncCard code { font-family: var(--mono); font-size: 13px; background: var(--card2); padding: 1px 4px; border-radius: 4px; }
+.fieldl { display: block; margin: 10px 0; } .fieldl span { display: block; font-size: 13px; color: var(--muted); margin-bottom: 4px; }
+.fieldl input { width: 100%; font: 16px var(--mono); padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border); background: var(--card2); color: var(--text); }
+.fieldl input:focus { outline: 2px solid var(--accent); border-color: transparent; }
+.syncstate { font-size: 16px; margin: 4px 0 6px; display: flex; align-items: center; }
+.syncmsg { margin-top: 10px; padding: 9px 12px; border-radius: 10px; background: var(--card2); font-size: 14px; }
+.syncmsg.good { background: var(--ok-soft); } .syncmsg.bad { background: var(--bad-soft); }

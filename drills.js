@@ -35,6 +35,7 @@ function normState(d) {
       if (!v || typeof v !== "object") continue;
       const num = (x, lo, hi) => (typeof x === "number" && isFinite(x) ? Math.min(hi, Math.max(lo, Math.round(x))) : lo);
       s.items[k] = { b: num(v.b, 0, 5), due: num(v.due, 0, 1e6), n: num(v.n, 0, 1e7), ok: num(v.ok, 0, 1e7), lapses: num(v.lapses, 0, 1e7), last: num(v.last, 0, 1e6) };
+      if (typeof v.t === "number" && v.t > 0) s.items[k].t = num(v.t, 0, 1e14);     // when it was last reviewed (ms): sync keeps the newest
     }
   }
   for (const f of ["days", "met"]) if (d[f] && typeof d[f] === "object")
@@ -43,20 +44,27 @@ function normState(d) {
   if (typeof d.here === "string") s.here = d.here;
   if (typeof d.best === "number") s.best = d.best;
   if (d.mmAll === true) s.mmAll = true;
-  // XP: kept if present; state saved before XP existed gets a one-time estimate from its
+  // XP: drill XP of this device (dxp) + other devices' (peerXp, from sync) + daily bonuses,
+  // derived in game.js. State saved before XP existed gets a one-time estimate from its
   // history (pure function of the state, so loading it again gives the same number).
+  if (typeof d.dxp === "number" && isFinite(d.dxp)) s.dxp = Math.max(0, Math.round(d.dxp));
   if (typeof d.xp === "number" && isFinite(d.xp)) { s.xp = Math.max(0, Math.round(d.xp)); if (typeof d.xpBackfill === "number") s.xpBackfill = d.xpBackfill; }
-  else { s.xp = PyGame.backfill(s); s.xpBackfill = s.xp; }
+  else if (s.dxp === undefined) { s.xp = PyGame.backfill(s); s.xpBackfill = s.xp; }
+  if (d.peerXp && typeof d.peerXp === "object") { s.peerXp = {}; for (const [k, v] of Object.entries(d.peerXp)) if (typeof v === "number" && v >= 0) s.peerXp[k] = Math.round(v); }
+  if (typeof d.dev === "string") s.dev = d.dev;
+  PyGame.normXp(s);
   return s;
 }
 function loadState() {
   let raw = null;
   try { raw = JSON.parse(localStorage.getItem(DRILL_KEY) || "null"); } catch (e) {}
   const s = normState(raw);
-  if (raw && typeof raw === "object" && typeof raw.xp !== "number") { ST = s; saveState(); }   // persist the backfill once
+  if (!raw || typeof raw !== "object" || typeof raw.dxp !== "number" || raw.dev !== s.dev) { ST = s; saveState(); }   // persist the XP conversion + device id once
   return s;
 }
 function saveState() {
+  PyGame.normXp(ST);
+  if (typeof PySync !== "undefined") PySync.dirty();      // push to the desktop after a quiet moment
   try { localStorage.setItem(DRILL_KEY, JSON.stringify(ST)); return true; }
   catch (e) { toast("Couldn't save on this device (storage full or blocked).", true); return false; }
 }
@@ -75,7 +83,7 @@ function grade(id, result) {          // result: "again" | "good" | "easy"
   it.n++;
   if (result === "again") { it.lapses++; it.b = 1; it.due = t; }       // missed: back in the queue today
   else { it.ok++; it.b = Math.min(5, it.b + (result === "easy" ? 2 : 1)); it.due = t + INTERVALS[it.b]; }
-  it.last = t;
+  it.last = t; it.t = Date.now();
   ST.items[id] = it;
   const k = dayKey();
   ST.days[k] = (ST.days[k] || 0) + 1;
@@ -94,16 +102,20 @@ function doneToday() { return ST.days[dayKey()] || 0; }
 
 // ------------------------------------------------------------------ XP + ranks (rules in game.js)
 function game() { return PyGame.summary(ST, (id) => !!D.byId[id]); }
-function renderBadge() { PyGame.badge($("streakChip"), game()); }
-function addXP(n, near) {
+let shownRank = null;
+function renderBadge() {
+  const g = game();
+  PyGame.badge($("streakChip"), g);
+  if (shownRank !== null && g.rank.index > shownRank) setTimeout(() => PyGame.celebrate(g), 650);
+  shownRank = g.rank.index;
+}
+// counted=true: the XP is already part of the derived total (the daily bonus); just show it
+function addXP(n, near, counted) {
   if (!n) return;
-  const before = game().rank.index;
-  ST.xp = (ST.xp || 0) + n;
+  if (!counted) ST.dxp = (ST.dxp || 0) + n;
   saveState();
   PyGame.floatXP(n, near);
   renderBadge();
-  const g = game();
-  if (g.rank.index > before) setTimeout(() => PyGame.celebrate(g), 650);
 }
 // XP for one answer (call BEFORE grade() so "already answered today" is known)
 function xpFor(it, ok, firstInSession) {
@@ -417,6 +429,7 @@ function renderToday() {
       <div style="margin-top:12px"><button class="btn" id="goCards">🃏 Review flashcards${dc ? ` (${dc} due)` : ""}</button></div>
     </div>
     ${mmCard()}
+    ${syncLine()}
     ${weak.length ? `<div class="card"><h3>Weak spots</h3><div class="muted small">Lessons where you've missed the most. A quick round helps.</div>
       ${weak.map(w => `<button class="list-btn" data-lid="${w.id}"><div class="grow"><b>${w.id}</b> ${esc(D.byId[w.id].title)}<div class="muted small">${Math.round(100 * w.acc)}% right so far</div></div><span class="chev">›</span></button>`).join("")}</div>` : ""}
   `);
@@ -426,6 +439,7 @@ function renderToday() {
   $("goCards").onclick = () => go("#/cards");
   $("goMuscle").onclick = () => go("#/muscle");
   $("rankCard").onclick = () => go("#/ranks");
+  bindSyncLine();
   for (const b of document.querySelectorAll(".list-btn[data-lid]")) b.onclick = () => startSession("lesson", buildLesson(b.dataset.lid), "Lesson " + b.dataset.lid, b.dataset.lid);
 }
 
@@ -612,6 +626,7 @@ function renderMore() {
       <a class="btn" style="margin-top:10px" href="code.html#${encodeURIComponent(hereId())}">Open coding lessons</a>
       <div class="muted small" style="margin-top:10px" id="pyoState">Checking offline coding…</div>
       <button class="btn ghost hidden" style="margin-top:8px" id="pyoGet">Download Python for offline coding (14 MB)</button></div>
+    ${syncCard()}
     <div class="card"><h3>Your progress</h3><div class="muted small">Saved on this device. Export makes a backup file that also moves progress between devices (it includes coding lessons, drills, flashcards and your streak).</div>
       <div class="btns two" style="margin-top:10px"><button class="btn" id="exportBtn">⬇ Export</button><button class="btn" id="importBtn">⬆ Import</button></div>
       <button class="linkbtn" id="resetDrills" style="color:var(--bad)">Reset drill progress…</button></div>
@@ -623,10 +638,11 @@ function renderMore() {
   $("moreRanks").onclick = () => go("#/ranks");
   $("importBtn").onclick = () => $("importFile").click();
   $("resetDrills").onclick = () => {
-    if (!confirm("Erase drill, flashcard and streak progress on this device? Coding lessons are kept.\n\n(Tip: Export first to keep a backup.)")) return;
+    if (!confirm("Erase drill, flashcard and streak progress on this device? Coding lessons are kept.\n\n(Tip: Export first to keep a backup.)" + (PySync.connected() ? "\n\nSync is on: the next sync brings your synced progress back. To really start over, Disconnect sync first." : ""))) return;
     ST = blankState(); saveState(); renderMore(); toast("Drill progress reset");
   };
   $("offlineNote").textContent = offline.note;
+  bindSyncCard();
   checkPyodide();
 }
 async function checkPyodide() {
@@ -675,7 +691,9 @@ $("importFile").onchange = async (e) => {
     const msg = `Replace your progress on this device with the file's?\n\nCoding: ${completed.length} lessons complete, code for ${Object.keys(code).length}.` +
       (drills ? `\nDrills: ${Object.keys(drills.items).length} practiced, ${Object.keys(drills.met).length} goal days.` : "\n(No drill progress in this file; yours is kept.)");
     if (!confirm(msg)) return;
-    localStorage.setItem(PROG_KEY, JSON.stringify({ completed, code, last: D.byId[raw.last] ? raw.last : null, gates }));
+    const now = Date.now(), code_t = {};          // an import is a deliberate edit: it wins the next sync
+    for (const k of Object.keys(code)) code_t[k] = now;
+    localStorage.setItem(PROG_KEY, JSON.stringify({ completed, code, code_t, last: D.byId[raw.last] ? raw.last : null, last_t: now, gates }));
     if (drills) { ST = drills; saveState(); }
     toast("Progress imported");
     route();
@@ -736,7 +754,7 @@ function record(it, ok, rating) {
   }
   S.xp = (S.xp || 0) + xp;
   addXP(xp, document.querySelector(".fb h4") || $("streakChip"));
-  if (justMet) { S.xp += PyGame.RULES.daily_bonus; addXP(PyGame.RULES.daily_bonus, $("streakChip")); }
+  if (justMet) { S.xp += PyGame.RULES.daily_bonus; addXP(PyGame.RULES.daily_bonus, $("streakChip"), true); }
   act(`<button class="btn ${ok ? "ok" : "primary"}" id="next">${S.i + 1 >= S.queue.length ? "Finish" : "Continue"}</button>`);
   $("next").onclick = nextItem;
   if (justMet) { justMet = false; setTimeout(() => toast(`🔥 Daily goal reached! ${streak()}-day streak · +${PyGame.RULES.daily_bonus} XP`), 400); }
@@ -853,6 +871,7 @@ function drawCard(it, head) {
 }
 function renderSessionEnd() {
   const S = SESSION;
+  if (typeof PySync !== "undefined") PySync.flush();      // a round ended: sync now
   $("sessProg").firstElementChild.style.width = "100%";
   const ids = Object.keys(S.first), right = ids.filter(id => S.first[id]).length;
   const pct = ids.length ? right / ids.length : 0;
@@ -868,6 +887,76 @@ function renderSessionEnd() {
   act(`${again ? '<button class="btn" id="again">' + (S.kind === "muscle" ? "Another round" : "Practice again") + "</button>" : ""}<button class="btn primary" id="done">Done</button>`);
   $("done").onclick = () => { SESSION = null; go(S.kind === "muscle" ? "#/muscle" : lid && S.kind !== "daily" ? "#/lesson/" + lid : "#/today"); };
   const ag = $("again"); if (ag) ag.onclick = () => S.kind === "muscle" ? startMuscle(S.topic) : startSession("lesson", buildLesson(lid), S.title, lid);
+}
+
+// ------------------------------------------------------------------ sync with the desktop (private GitHub repo)
+function syncLine() {
+  const st = PySync.status();
+  if (!st.connected) return "";
+  return `<button class="syncline" id="syncLine"><span class="sdot ${st.cls}"></span><span>${esc(st.text)}</span><span class="chev">›</span></button>`;
+}
+function bindSyncLine() { const b = $("syncLine"); if (b) b.onclick = () => go("#/more"); }
+function syncSteps() {
+  const u = PySync.TOKEN_URL, owner = PySync.DEFAULT_REPO.split("/")[0], rname = PySync.DEFAULT_REPO.split("/")[1];
+  return `<ol class="steps">
+    <li>Tip: it's easiest to make the token on your computer (desktop PyLearn has the same steps), then paste it here too. On the iPhone: open <a href="${u}" target="_blank" rel="noopener">${u}</a> and sign in as <b>${owner}</b>.</li>
+    <li><b>Token name:</b> PyLearn sync. <b>Expiration:</b> your choice (e.g. 1 year).</li>
+    <li><b>Repository access:</b> <b>Only select repositories</b> → <b>${rname}</b>.</li>
+    <li><b>Permissions → Repository permissions → Contents: Read and write.</b> Nothing else.</li>
+    <li><b>Generate token</b>, copy it (starts with <code>github_pat_</code>), and paste it below.</li></ol>`;
+}
+function syncCard() {
+  const st = PySync.status();
+  if (!st.connected) return `<div class="card" id="syncCard"><h3>🔄 Sync with desktop</h3>
+    <div class="muted small">Keep this app and desktop PyLearn in step automatically: lessons, code, streak, XP and drills, through one private file in your GitHub account (<b>${esc(st.repo)}</b>).</div>
+    ${syncSteps()}
+    <label class="fieldl"><span>Repository</span><input id="syncRepo" value="${esc(st.repo)}" autocapitalize="off" autocorrect="off" spellcheck="false" autocomplete="off"></label>
+    <label class="fieldl"><span>Token</span><input id="syncTok" type="password" placeholder="github_pat_…" autocapitalize="off" autocorrect="off" spellcheck="false" autocomplete="off"></label>
+    <button class="btn primary" id="syncSave">Save &amp; connect</button><div id="syncOut"></div>
+    <div class="muted small" style="margin-top:8px">The token stays on this iPhone and is never shown again. Don't send it to anyone.</div></div>`;
+  return `<div class="card" id="syncCard"><h3>🔄 Sync with desktop</h3>
+    <div class="syncstate"><span class="sdot ${st.cls}"></span><b>${esc(st.text)}</b></div>
+    <div class="muted small">Repository: <b>${esc(st.repo)}</b> (private) · token saved ✓ (hidden)<br>Pulls when the app opens or comes back to the front; pushes after a round or a lesson.</div>
+    ${st.message ? `<div class="syncmsg ${st.cls === "bad" ? "bad" : ""}">${esc(st.message)}</div>` : ""}
+    <div class="btns two" style="margin-top:10px"><button class="btn primary" id="syncGo">Sync now</button><button class="btn" id="syncTest">Test connection</button></div>
+    <button class="linkbtn" id="syncOff">Disconnect</button><div id="syncOut"></div></div>`;
+}
+function syncOut(ok, msg) { const el = $("syncOut"); if (el) el.innerHTML = `<div class="syncmsg ${ok ? "good" : "bad"}">${ok ? "✓ " : ""}${esc(msg)}</div>`; }
+function bindSyncCard() {
+  const save = $("syncSave");
+  if (save) save.onclick = async () => {
+    const tok = $("syncTok");
+    if (!tok.value.trim()) return syncOut(false, "Paste the token first.");
+    save.disabled = true; save.textContent = "Connecting…";
+    try {
+      const msg = await PySync.connect($("syncRepo").value, tok.value);
+      tok.value = "";
+      const r = await PySync.cycle();
+      renderMore();
+      const st = PySync.status();
+      syncOut(st.cls !== "bad", st.cls === "bad" ? st.message : msg + (r && r.changed ? " Progress from the desktop is here now." : " Synced."));
+    } catch (e) { save.disabled = false; save.textContent = "Save & connect"; syncOut(false, e.message); }
+  };
+  const goB = $("syncGo");
+  if (goB) goB.onclick = async () => { goB.disabled = true; await PySync.cycle(); renderMore(); const st = PySync.status(); if (st.cls === "bad") syncOut(false, st.message); };
+  const t = $("syncTest");
+  if (t) t.onclick = async () => { t.disabled = true; try { syncOut(true, await PySync.test()); } catch (e) { syncOut(false, e.message); } t.disabled = false; };
+  const off = $("syncOff");
+  if (off) off.onclick = () => {
+    if (!confirm("Stop syncing on this iPhone? The token is removed from this device. Your progress here and in GitHub stays as it is.")) return;
+    PySync.disconnect(); renderMore(); toast("Sync turned off");
+  };
+}
+// The desktop (or another install) changed something: reload state, refresh the screen.
+function onSynced() {
+  ST = loadState();
+  if (SESSION) { renderBadge(); return; }      // never pull the rug out from under a round
+  route();
+}
+function onSyncStatus() {
+  const el = $("syncLine");
+  if (el) { const st = PySync.status(); el.innerHTML = `<span class="sdot ${st.cls}"></span><span>${esc(st.text)}</span><span class="chev">›</span>`; }
+  if (!SESSION && (location.hash === "#/more") && $("syncCard") && !$("syncTok")) renderMore();
 }
 
 // ------------------------------------------------------------------ router
@@ -918,6 +1007,7 @@ if ("serviceWorker" in navigator && (location.protocol === "https:" || ["localho
     D.mm = (dd.muscle && dd.muscle.topics) || [];
     for (const T of D.mm) { D.mmById[T.id] = T; for (const it of T.drills.concat(T.cards)) { D.items[it.id] = it; D.topicOf[it.id] = T.id; } }
     ST = loadState();
+    PySync.init({ onChange: onSynced, onStatus: onSyncStatus });   // pull on open (if sync is set up)
     fetch("data/meta.json").then(r => r.json()).then(j => { META = j; }).catch(() => {});
     route();
   } catch (e) {
@@ -928,6 +1018,6 @@ if ("serviceWorker" in navigator && (location.protocol === "https:" || ["localho
 // hooks for automated tests
 window.PyLearn = {
   get state() { return ST; }, get session() { return SESSION; }, game, D, today, dayKey, keyOf, streak, buildDaily, hereId, unlocked, mastery, grade, offline,
-  buildMuscle, mmUnlocked, mmStats, topicReached, startMuscle,
+  buildMuscle, mmUnlocked, mmStats, topicReached, startMuscle, sync: PySync, reload: () => { ST = loadState(); route(); },
   item: (id) => D.items[id], current: () => SESSION && D.items[SESSION.queue[SESSION.i]],
 };

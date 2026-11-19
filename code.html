@@ -45,6 +45,7 @@
       <button class="b small" id="importBtn" title="Load progress from a JSON file">⬆ Import</button>
       <button class="linkbtn" id="resetAll" title="Erase all progress and saved code">Reset</button>
     </div>
+    <div class="footnote hidden" id="syncNote"></div>
     <div class="footnote" id="offlineNote">Works offline once loaded. Progress is stored on this device.</div>
     <input type="file" id="importFile" accept="application/json,.json" class="hidden">
   </div>
@@ -52,6 +53,7 @@
 <main id="main"><div id="content"><div class="loading-msg">Loading lessons…</div></div></main>
 <div id="toast" role="status" aria-live="polite"></div>
 <script src="game.js"></script>
+<script src="sync.js"></script>
 <script src="careful.js"></script>
 <script src="app.js"></script>
 </body>
