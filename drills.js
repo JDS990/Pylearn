@@ -269,6 +269,8 @@ function buildDaily(n = ST.goal) {
   seen.slice().sort((a, b) => rec(a.id).due - rec(b.id).due).forEach(add);
   return interleave(shuffle(picked));
 }
+function buildWalk(lid) { return (D.bank[lid].walk || []).map(it => it.id); }   // in order: one idea per step
+function walkSeen(lid) { return (D.bank[lid].walk || []).filter(it => rec(it.id)).length; }
 function buildLesson(lid) { return interleave(D.bank[lid].drills.map(d => d.id)); }
 function buildCards(lid) {
   if (lid) return shuffle(D.bank[lid].cards.map(c => c.id));
@@ -561,8 +563,9 @@ function renderLesson(lid) {
       <ul>${L.summary.map(s => "<li>" + inline(s) + "</li>").join("")}</ul>
       <button class="linkbtn" id="readFull">Read the full lesson ›</button>
     </div>
+    ${L.walk ? `<button class="btn ${walkSeen(lid) < L.walk.length ? "primary" : ""} col walkbtn" id="walk">🪜 Step by step<span class="sub">${L.walk.length} small steps, one idea each${walkSeen(lid) ? ` · ${walkSeen(lid)} of ${L.walk.length} done` : ". Start here if it feels like a lot"}</span></button>` : ""}
     <div class="btns">
-      <button class="btn primary col" id="practice">▶ Practice drills<span class="sub">${L.drills.length} drills · ${Object.entries(counts).map(([t, n]) => TYPE_ICON[t] + " " + n).join("  ")}</span></button>
+      <button class="btn ${L.walk && walkSeen(lid) < L.walk.length ? "" : "primary"} col" id="practice">▶ Practice drills<span class="sub">${L.drills.length} drills · ${Object.entries(counts).map(([t, n]) => TYPE_ICON[t] + " " + n).join("  ")}</span></button>
       <button class="btn col" id="flash">🃏 Flashcards<span class="sub">${L.cards.length} cards</span></button>
     </div>
     <div class="card" style="margin-top:14px">
@@ -578,6 +581,7 @@ function renderLesson(lid) {
     <div class="why"><b>🧭 Why this matters:</b> ${inline(m.why.trim().replace(/\n/g, " "))}</div>
   `);
   $("practice").onclick = () => startSession("lesson", buildLesson(lid), "Lesson " + lid, lid);
+  if (L.walk) $("walk").onclick = () => startSession("walk", buildWalk(lid), "Step by step " + lid, lid);
   $("flash").onclick = () => startSession("cards", buildCards(lid), "Cards " + lid, lid);
   $("readFull").onclick = () => go("#/read/" + lid);
   const sh = $("setHere"); if (sh) sh.onclick = () => { ST.here = lid; saveState(); renderLesson(lid); toast("Lesson " + lid + " is now your current lesson"); };
@@ -586,7 +590,9 @@ function renderRead(lid) {
   const l = D.byId[lid];
   if (!l) return go("#/learn");
   setBar({ title: lid + " " + l.title, back: () => history.length > 1 ? history.back() : go("#/lesson/" + lid) }); setTab("learn");
+  const parts = (l.steps || []).map((s, i) => `<div class="card md step-part"><h3>🪜 Part ${i + 1} · ${inline(s.title)}</h3>${md(s.text)}${s.example ? `<pre class="code">${highlight(s.example.replace(/\n$/, ""))}</pre>` : ""}</div>`).join("");
   view(`<h2 class="page">${esc(l.title)}</h2><div class="card md">${md(l.text)}</div>
+    ${parts}
     <div class="card"><h3>Example</h3><pre class="code">${highlight(l.example.replace(/\n$/, ""))}</pre></div>
     <button class="btn primary" id="practice">▶ Practice this lesson</button>`);
   $("practice").onclick = () => startSession("lesson", buildLesson(lid), "Lesson " + lid, lid);
@@ -720,6 +726,7 @@ function renderSession() {
   const retry = S.first[it.id] === false;
   const breathe = (S.missRun || 0) >= 2;
   let head = `<div class="tag">${TYPE_ICON[it.type]} ${TYPE_NAME[it.type]} <span class="lid">· ${esc(srcLabel(it.id))}${retry ? " · try again" : ""}</span></div>`;
+  if (it.lead) head += `<div class="lead" id="lead"><span class="lead-n">${S.kind === "walk" ? `${S.i + 1} / ${S.queue.length}` : ""}</span>${inline(it.lead)}</div>`;
   if (breathe) head += '<div class="readnote breathe" id="readNote">🌬️ <b>Take a breath.</b> Two misses in a row: read this one line by line before you tap.</div>';
   else if (retry) head += '<div class="readnote" id="readNote">👀 <b>Second look.</b> You missed this earlier: read every line slowly before answering.</div>';
   ({ predict: drawPredict, fill: drawFill, bug: drawBug, order: drawOrder, card: drawCard })[it.type](it, head);
@@ -883,10 +890,10 @@ function renderSessionEnd() {
     <div class="card"><div class="stat"><div><b>${n}/${ST.goal}</b><span>today's goal</span></div><div><b>🔥 ${s}</b><span>day streak</span></div></div>
     ${met ? '<p class="center small" style="margin:10px 0 0">Daily goal reached. See you tomorrow!</p>' : `<p class="center small muted" style="margin:10px 0 0">${ST.goal - n} more to reach today's goal.</p>`}</div>`);
   const lid = S.lid;
-  const again = S.kind === "lesson" || S.kind === "muscle";
-  act(`${again ? '<button class="btn" id="again">' + (S.kind === "muscle" ? "Another round" : "Practice again") + "</button>" : ""}<button class="btn primary" id="done">Done</button>`);
+  const again = S.kind === "lesson" || S.kind === "muscle" || S.kind === "walk";
+  act(`${again ? '<button class="btn" id="again">' + (S.kind === "muscle" ? "Another round" : S.kind === "walk" ? "Walk through again" : "Practice again") + "</button>" : ""}<button class="btn primary" id="done">Done</button>`);
   $("done").onclick = () => { SESSION = null; go(S.kind === "muscle" ? "#/muscle" : lid && S.kind !== "daily" ? "#/lesson/" + lid : "#/today"); };
-  const ag = $("again"); if (ag) ag.onclick = () => S.kind === "muscle" ? startMuscle(S.topic) : startSession("lesson", buildLesson(lid), S.title, lid);
+  const ag = $("again"); if (ag) ag.onclick = () => S.kind === "muscle" ? startMuscle(S.topic) : S.kind === "walk" ? startSession("walk", buildWalk(lid), S.title, lid) : startSession("lesson", buildLesson(lid), S.title, lid);
 }
 
 // ------------------------------------------------------------------ sync with the desktop (private GitHub repo)
@@ -1003,7 +1010,7 @@ if ("serviceWorker" in navigator && (location.protocol === "https:" || ["localho
     const ld = await lr.json(), dd = await dr.json();
     D.modules = ld.modules; D.lessons = ld.lessons; D.bank = dd.lessons;
     D.lessons.forEach((l, i) => { D.byId[l.id] = l; D.idx[l.id] = i; });
-    for (const [lid, L] of Object.entries(D.bank)) for (const it of L.drills.concat(L.cards)) { D.items[it.id] = it; D.lessonOf[it.id] = lid; }
+    for (const [lid, L] of Object.entries(D.bank)) for (const it of L.drills.concat(L.cards, L.walk || [])) { D.items[it.id] = it; D.lessonOf[it.id] = lid; }
     D.mm = (dd.muscle && dd.muscle.topics) || [];
     for (const T of D.mm) { D.mmById[T.id] = T; for (const it of T.drills.concat(T.cards)) { D.items[it.id] = it; D.topicOf[it.id] = T.id; } }
     ST = loadState();
