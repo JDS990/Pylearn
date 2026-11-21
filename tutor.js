@@ -6,7 +6,7 @@
   "use strict";
   function esc(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
 
-  let cssDone = false, host = null, state = { finding: 0, level: 0, last: null, check: null };
+  let cssDone = false, host = null, state = { finding: 0, level: 0, last: null, check: null, ai: { msgs: [], usage: null, connected: false, loaded: false } };
 
   function injectCSS() {
     if (cssDone || typeof document === "undefined") return; cssDone = true;
@@ -35,12 +35,18 @@
 .exrow{display:flex;align-items:flex-start;gap:2px}
 #explainBox,.explain-box{margin-top:10px;padding:10px 12px;border:1px solid #3a4a63;border-radius:8px;background:#152033;font-size:14px;line-height:1.5}
 #explainBox code,.explain-box code{font-size:13px}
+#aiChat{margin-top:14px;padding-top:12px;border-top:1px solid #2a3441}
+#aiChat textarea{width:100%;box-sizing:border-box;background:#0b0f14;color:#dce6f0;border:1px solid #2a3441;border-radius:8px;padding:8px 10px;font:inherit;margin:8px 0;min-height:56px}
+.aimsg{margin:8px 0;padding:8px 10px;border-radius:8px;line-height:1.5;font-size:14.5px}
+.aimsg.user{background:#1c2430}
+.aimsg.assistant{background:#152033;border:1px solid #3a4a63}
+.aimsg .who{color:#8b98a8;font-size:12px;margin-bottom:2px}
 .exp-pop{margin-top:8px}
 `;
     document.head.appendChild(st);
   }
 
-  function init(opts) { host = opts || {}; injectCSS(); }
+  function init(opts) { host = opts || {}; injectCSS(); state.ai = { msgs: [], usage: null, connected: false, loaded: false }; }
 
   function code() { return host.getCode ? host.getCode() : ""; }
   function box() { return document.getElementById("tutorBox"); }
@@ -74,7 +80,7 @@
       `<button class="b small" id="tutorAgain">Ask again</button>` +
       `<button class="b small" id="tutorExplain">Explain this line</button>` +
       `<button class="b small" id="tutorTrace">Trace it</button></div>` +
-      `<div id="tutorExtra"></div>`;
+      `<div id="tutorExtra"></div>` + aiSection();
     el.innerHTML = body;
     if (a.line) markLine(a.line);
     if (a.task_ref && host.flashTask) host.flashTask(a.task_ref);
@@ -82,6 +88,7 @@
     el.querySelector("#tutorAgain").onclick = () => ask({ reset: true });
     el.querySelector("#tutorExplain").onclick = () => explain();
     el.querySelector("#tutorTrace").onclick = () => doTrace();
+    bindAI();
   }
 
   async function ask(opts) {
@@ -94,6 +101,7 @@
       const a = await host.request({ action: "advise", code: code(), finding: state.finding, level: state.level, check: state.check || undefined });
       state.last = a;
       renderNudge(a);
+      refreshAI();
     } catch (e) {
       if (el) el.innerHTML = "<div class='tq'>The tutor could not run. Is PyLearn still open?</div>";
     }
@@ -185,6 +193,93 @@
     });
   }
 
+
+
+  function usageLine(u) {
+    if (!u) return "";
+    const cap = u.cap ? ` · ${u.requests} of ${u.cap} requests today` : ` · ${u.requests || 0} requests today`;
+    const usd = u.usd_estimate ? ` · about $${Number(u.usd_estimate).toFixed(u.usd_estimate < 0.01 ? 4 : 2)} (estimate)` : "";
+    return `Today: ${(u.tokens || 0).toLocaleString()} tokens${cap}${usd}`;
+  }
+  function aiSection() {
+    let h = `<div id="aiChat"><div class="thead"><h3>Ask the AI tutor</h3></div>`;
+    if (!state.ai.connected) {
+      h += `<p class="tmeta">Optional. Connect your Anthropic API key in <b>AI tutor</b> settings. Never paste a key into this box. The built-in tutor above works with no key.</p></div>`;
+      return h;
+    }
+    h += `<div id="aiMsgs">`;
+    for (const m of (state.ai.msgs || [])) {
+      const who = m.role === "user" ? "You" : "AI tutor";
+      const body = host.inline ? host.inline(m.content) : esc(m.content);
+      h += `<div class="aimsg ${m.role === "user" ? "user" : "assistant"}"><div class="who">${who}</div>${body}</div>`;
+    }
+    h += `</div><textarea id="aiQ" rows="2" placeholder="Ask a question about this lesson…"></textarea>
+      <div class="btnrow"><button class="b small primary" id="aiAskBtn">Ask the AI tutor</button></div>
+      <div class="tmeta" id="aiUse">${esc(usageLine(state.ai.usage))}</div>
+      <div id="aiErr"></div></div>`;
+    return h;
+  }
+  function bindAI() {
+    const btn = document.getElementById("aiAskBtn");
+    if (btn) btn.onclick = sendAI;
+    const q = document.getElementById("aiQ");
+    if (q) q.addEventListener("keydown", ev => {
+      if (ev.key === "Enter" && (ev.metaKey || ev.ctrlKey)) { ev.preventDefault(); sendAI(); }
+    });
+  }
+  async function refreshAI() {
+    if (!host.aiStatus) return;
+    try {
+      const st = await host.aiStatus();
+      state.ai.connected = !!(st && st.connected);
+      state.ai.usage = st && st.usage;
+      if (state.ai.connected && !state.ai.loaded && host.aiHistory) {
+        const h = await host.aiHistory();
+        state.ai.msgs = (h && h.history) || [];
+        state.ai.loaded = true;
+      }
+    } catch (e) { state.ai.connected = false; }
+    const chat = document.getElementById("aiChat");
+    if (chat && box()) {
+      chat.outerHTML = aiSection();
+      bindAI();
+    }
+  }
+  async function sendAI() {
+    const qel = document.getElementById("aiQ");
+    const q = ((qel && qel.value) || "").trim();
+    if (!q || !host.aiAsk) return;
+    state.ai.msgs = (state.ai.msgs || []).concat([{ role: "user", content: q }]);
+    if (qel) qel.value = "";
+    const err = document.getElementById("aiErr");
+    if (err) err.innerHTML = "<div class='tmeta'>Thinking…</div>";
+    const chat = document.getElementById("aiChat");
+    if (chat) { chat.outerHTML = aiSection(); bindAI(); const e2 = document.getElementById("aiErr"); if (e2) e2.innerHTML = "<div class='tmeta'>Thinking…</div>"; }
+    try {
+      const r = await host.aiAsk({ question: q, code: code() });
+      if (r && r.usage) state.ai.usage = r.usage;
+      if (r && r.ok && r.text) {
+        state.ai.msgs.push({ role: "assistant", content: r.text });
+        if (r.history) state.ai.msgs = r.history;
+        const c = document.getElementById("aiChat");
+        if (c) { c.outerHTML = aiSection(); bindAI(); }
+        return;
+      }
+      if (r && r.fallback && !state.last) {
+        try { await ask({ reset: true }); } catch (e2) {}
+      }
+      const c = document.getElementById("aiChat");
+      if (c) { c.outerHTML = aiSection(); bindAI(); }
+      const e3 = document.getElementById("aiErr");
+      if (e3) e3.innerHTML = `<div class="banner info">${esc((r && r.message) || "The built-in tutor is taking over.")}</div>`;
+    } catch (e) {
+      const c = document.getElementById("aiChat");
+      if (c) { c.outerHTML = aiSection(); bindAI(); }
+      const e3 = document.getElementById("aiErr");
+      if (e3) e3.innerHTML = `<div class="banner info">The AI tutor couldn't run (you may be offline). I'll use the built-in tutor.</div>`;
+      if (!state.last) { try { await ask({ reset: true }); } catch (e2) {} }
+    }
+  }
 
   function clip(s, n) { s = String(s || ""); return s.length <= n ? s : s.slice(0, n) + "…"; }
 

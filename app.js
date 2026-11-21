@@ -366,6 +366,20 @@ function setupTutor(l) {
       const timeout = Math.max(8, (l.web_timeout || 20));
       return runner.exec("tutor", { code: "", test: "", payload }, timeout);
     },
+    aiStatus: async () => (typeof PyAI !== "undefined" ? PyAI.status() : { connected: false }),
+    aiHistory: async () => ({ history: typeof PyAI !== "undefined" ? PyAI.history(l.id) : [] }),
+    aiAsk: async (p) => {
+      if (typeof PyAI === "undefined") return { ok: false, fallback: true, message: "The AI tutor isn't loaded." };
+      let findings = [];
+      try {
+        const fr = await runner.exec("tutor", { code: "", test: "", payload: JSON.stringify({ action: "findings", lesson: { id: l.id, title: l.title, task: l.task, starter: l.starter, timeout: l.timeout, tutor: l.tutor || {} }, code: p.code || editorCode() }) }, Math.max(8, l.web_timeout || 20));
+        findings = (fr && fr.findings) || [];
+      } catch (e) {}
+      const done = (S.progress.completed || []).length;
+      const summary = done + " of " + (S.lessons || []).length + " lessons complete. current lesson " + l.id + ".";
+      // Never pass solution or test into PyAI.ask's lesson object... wait, ask() needs them ONLY to strip. Passing them is OK if buildBody strips and never puts them in the payload. Safer to pass so strip can work if code equals solution.
+      return PyAI.ask({ lesson: l, code: p.code || editorCode(), question: p.question, run: S.lastRun || undefined, findings, summary });
+    },
     getCode: () => { const ed = $("editor"); return ed ? ed.value : ""; },
     getCursorLine: () => {
       const ed = $("editor"); if (!ed) return 1;
@@ -377,6 +391,23 @@ function setupTutor(l) {
   const btn = $("tutorBtn");
   if (btn) btn.onclick = () => PyTutor.ask({ reset: true });
   PyTutor.bindGutter();
+}
+
+
+function openAISettings() {
+  if (typeof PyAI === "undefined") return toast("The AI tutor isn't loaded.");
+  // show settings in the main content, with a back path
+  const prev = S.current;
+  $("content").innerHTML = `<div class="crumb"><button class="linkbtn" id="aiBack">← Back</button></div><h2 class="title">🧑‍🏫 AI tutor</h2>
+    <p class="muted">Optional chat tutor using your Anthropic key. It never hands out a full solution and awards no XP. The built-in tutor still works offline.</p>
+    ${PyAI.settingsHtml()}`;
+  const back = () => { if (prev && byId[prev]) openLesson(prev); };
+  $("aiBack").onclick = back;
+  PyAI.bindSettings((r) => { openAISettings(); const box = $("aiOut"); if (box && r) box.innerHTML = `<div class="banner ${r.ok ? "pass" : "fail"}">${(r.message || "").replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]))}</div>`; });
+}
+function bindAISettingsBtn() {
+  const b = $("aiSettingsBtn");
+  if (b && !b.dataset.bound) { b.dataset.bound = "1"; b.onclick = openAISettings; }
 }
 
 function isUnlocked(id) {
@@ -590,6 +621,7 @@ async function doRun() {
   try {
     const r = await runner.exec("run", { code: editorCode() }, l.web_timeout, liveOutput(box));
     if (l.id !== S.current) return;
+    S.lastRun = r;
     showOutput(box, r);
     if (r.explanation) $("explain").innerHTML = '<div class="banner info md">' + inline(r.explanation) + "</div>";
     box.scrollIntoView({ block: "nearest", behavior: "smooth" });
@@ -616,6 +648,7 @@ async function doCheck() {
   res.innerHTML = '<div class="out"><span class="dim">' + (runner.state === "ready" ? "Checking your code…" : "Starting Python (the first time can take a few seconds)…") + "</span></div>";
   try {
     const r = await runner.exec("check", { code, test: l.test }, l.web_timeout);
+    S.lastRun = r;
     let gained = 0, before = null, after = null;
     if (r.status === "pass") {
       before = gameNow();

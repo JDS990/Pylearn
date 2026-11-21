@@ -635,6 +635,7 @@ function renderMore() {
       <div class="muted small" style="margin-top:10px" id="pyoState">Checking offline coding…</div>
       <button class="btn ghost hidden" style="margin-top:8px" id="pyoGet">Download Python for offline coding (14 MB)</button></div>
     ${syncCard()}
+    ${typeof PyAI !== 'undefined' ? PyAI.settingsHtml() : ''}
     <div class="card"><h3>Your progress</h3><div class="muted small">Saved on this device. Export makes a backup file that also moves progress between devices (it includes coding lessons, drills, flashcards and your streak).</div>
       <div class="btns two" style="margin-top:10px"><button class="btn" id="exportBtn">⬇ Export</button><button class="btn" id="importBtn">⬆ Import</button></div>
       <button class="linkbtn" id="resetDrills" style="color:var(--bad)">Reset drill progress…</button></div>
@@ -651,6 +652,7 @@ function renderMore() {
   };
   $("offlineNote").textContent = offline.note;
   bindSyncCard();
+  if (typeof PyAI !== 'undefined') PyAI.bindSettings(() => renderMore());
   checkPyodide();
 }
 async function checkPyodide() {
