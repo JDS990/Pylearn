@@ -652,7 +652,7 @@ function renderMore() {
   };
   $("offlineNote").textContent = offline.note;
   bindSyncCard();
-  if (typeof PyAI !== 'undefined') PyAI.bindSettings(() => renderMore());
+  if (typeof PyAI !== 'undefined') PyAI.bindSettings((r) => { if (!r || r.ok) renderMore(); });
   checkPyodide();
 }
 async function checkPyodide() {

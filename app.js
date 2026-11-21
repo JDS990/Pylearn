@@ -403,7 +403,16 @@ function openAISettings() {
     ${PyAI.settingsHtml()}`;
   const back = () => { if (prev && byId[prev]) openLesson(prev); };
   $("aiBack").onclick = back;
-  PyAI.bindSettings((r) => { openAISettings(); const box = $("aiOut"); if (box && r) box.innerHTML = `<div class="banner ${r.ok ? "pass" : "fail"}">${(r.message || "").replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]))}</div>`; });
+  PyAI.bindSettings((r) => {
+    if (r && !r.ok) {
+      const box = $("aiOut");
+      if (box) box.innerHTML = `<div class="banner fail">${(r.message || "").replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]))}</div>`;
+      return;
+    }
+    openAISettings();
+    const box = $("aiOut");
+    if (box && r) box.innerHTML = `<div class="banner ${r.ok ? "pass" : "fail"}">${(r.message || "").replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]))}</div>`;
+  });
 }
 function bindAISettingsBtn() {
   const b = $("aiSettingsBtn");

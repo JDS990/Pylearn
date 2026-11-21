@@ -17,7 +17,7 @@
   const KEYS_URL = "https://console.anthropic.com/settings/keys";
   const API_URL = "https://api.anthropic.com/v1/messages";
   const VERSION = "2026-10-21";
-  const MAX_TOKENS = 400, MAX_QUESTION = 600, MAX_CODE = 4000, MAX_TEXT = 2500, MAX_RUN = 1500;
+  const MAX_TOKENS = 1024, PROBE_MAX_TOKENS = 256, MAX_QUESTION = 600, MAX_CODE = 4000, MAX_TEXT = 2500, MAX_RUN = 1500;
   const MAX_HISTORY = 8, MAX_CONTEXT = 12000, DEFAULT_CAP = 40;
   const CFG_KEY = "pylearn.ai.v1", CHAT_KEY = "pylearn.ai.chats.v1";
   const SYSTEM_PROMPT = "You are PyLearn's optional AI tutor, coaching a total beginner who often rushes.\n\nHow you teach:\n- Stay Socratic. Ask a focused question or give a short nudge. Never hand out a full solution, a completed program, or a drop-in replacement for the learner's code.\n- If they ask for the answer, the solution, or \"just tell me what to type\", coach them instead: point at the relevant task line and ask a smaller question.\n- Keep answers short (a few sentences). One idea at a time.\n- Use the course phrasing the learner already knows:\n  - assignment: \"`x` gets value \u2026\"\n  - membership: \"is x found inside y?\"\n  - loops: \"for each x taken from y\"\n  - equality: \"is a equal to b?\"\n  - `%`: \"the remainder when a is packed into groups of b\"\n- Always end with a read-carefully reminder that points back to the exact task line involved (quote a short phrase from the task).\n- You may show a tiny snippet only to illustrate a concept, and only with different variable names than the task (never the learner's identifiers, and never the answer to this exercise).\n- You can see the built-in tutor's findings; you may build on them, but do not paste a finished fix.\n- Do not reveal hidden tests or any official solution. If those appear to be missing from your context, that is intentional.\n- No XP, grades, or progress changes. Just teaching.\n";
@@ -114,7 +114,7 @@
     });
     if (msgs.length > MAX_HISTORY * 2) msgs.splice(0, msgs.length - MAX_HISTORY * 2);
     msgs.push({ role: "user", content: buildContext(lesson, code, run, findings, summary, question) });
-    const body = { model: model || DEFAULT_MODEL, max_tokens: MAX_TOKENS, system: SYSTEM_PROMPT, messages: msgs, effort: "low" };
+    const body = { model: model || DEFAULT_MODEL, max_tokens: MAX_TOKENS, system: SYSTEM_PROMPT, messages: msgs, output_config: { effort: "low" } };
     const blob = JSON.stringify(body);
     if ((sol && sol.trim().length >= 8 && blob.indexOf(sol.trim()) >= 0) ||
         (tes && tes.trim().length >= 8 && blob.indexOf(tes.trim()) >= 0)) {
@@ -139,8 +139,15 @@
     if (status === 429 || errType === "rate_limit_error" || /rate limit|spend cap/i.test(msg))
       return { ok: false, fallback: true, error: "rate_limit",
         message: "Anthropic is rate-limiting this key, or a spend cap was reached. I'll use the built-in tutor for now." };
-    return { ok: false, fallback: true, error: "unavailable",
-      message: "The AI tutor couldn't finish this request. I'll use the built-in tutor for now." };
+    if (status === 500 || status === 504 || status === 529 || errType === "api_error" || errType === "timeout_error" || errType === "overloaded_error")
+      return { ok: false, fallback: true, error: "unavailable",
+        message: "Anthropic is busy or timed out. I'll use the built-in tutor for now." };
+    const typ = String(errType || "").toLowerCase().replace(/[^a-z0-9_.-]/g, "").slice(0, 80);
+    let text = String(msg || "").replace(/\s+/g, " ").trim().replace(/sk-ant-[A-Za-z0-9_-]+/g, "[key]");
+    if (text.length > 180) text = text.slice(0, 180);
+    const detail = [typ, text].filter(Boolean).join("; ");
+    return { ok: false, fallback: true, error: typ || "unavailable",
+      message: "The AI tutor couldn't finish this request" + (detail ? " (" + detail + ")" : "") + ". I'll use the built-in tutor for now." };
   }
   async function callApi(key, body) {
     let res, raw;
@@ -190,7 +197,7 @@
     const cfg = loadCfg();
     if (MODELS.some(m => m.id === model)) cfg.model = model;
     if (cap != null && Number.isFinite(+cap)) cfg.daily_cap = Math.max(0, Math.min(500, +cap));
-    const body = { model: cfg.model, max_tokens: 16, messages: [{ role: "user", content: "Reply with the single word ok." }], effort: "low" };
+    const body = { model: cfg.model, max_tokens: PROBE_MAX_TOKENS, messages: [{ role: "user", content: "Reply with the single word ok." }], output_config: { effort: "low" } };
     const [payload, err] = await callApi(key, body);
     if (err) return { ok: false, message: err.message, error: err.error };
     cfg.key = key;
@@ -214,7 +221,7 @@
   async function testConnection() {
     const cfg = loadCfg();
     if (!cfg.key) return { ok: false, message: "No API key is saved yet." };
-    const body = { model: cfg.model, max_tokens: 16, messages: [{ role: "user", content: "Reply with the single word ok." }], effort: "low" };
+    const body = { model: cfg.model, max_tokens: PROBE_MAX_TOKENS, messages: [{ role: "user", content: "Reply with the single word ok." }], output_config: { effort: "low" } };
     const [payload, err] = await callApi(cfg.key, body);
     if (err) return Object.assign({ ok: false, message: err.message, error: err.error }, status());
     record(cfg, payload && payload.usage);
@@ -238,8 +245,14 @@
     const [payload, err] = await callApi(cfg.key, body);
     if (err) { err.usage = usageOf(cfg); return err; }
     const text = textOf(payload);
-    if (!text) return { ok: false, fallback: true, error: "unavailable", usage: usageOf(cfg),
-      message: "The AI tutor returned an empty reply. I'll use the built-in tutor for now." };
+    if (!text) {
+      const u = record(cfg, payload && payload.usage);
+      if (payload && payload.stop_reason === "max_tokens")
+        return { ok: false, fallback: true, error: "truncated", usage: u,
+          message: "The AI tutor used up its reply budget before finishing a written answer (some of that budget can go to thinking). Try asking again. I'll use the built-in tutor for now." };
+      return { ok: false, fallback: true, error: "unavailable", usage: u,
+        message: "The AI tutor returned an empty reply. I'll use the built-in tutor for now." };
+    }
     const u = record(cfg, payload.usage);
     const turns = hist.concat([{ role: "user", content: q }, { role: "assistant", content: text }]);
     setHistory(lid, turns);
@@ -290,14 +303,23 @@
       save.disabled = true;
       try {
         let r;
-        if (st.connected) r = updateSettings(modelVal(), capVal());
-        else {
+        if (st.connected) {
+          r = updateSettings(modelVal(), capVal());
+          if (onDone) onDone(r);
+          else out(!!r.ok, r.message || (r.ok ? "Settings saved." : "Could not save."));
+        } else {
           const keyEl = document.getElementById("aiKey");
           r = await connect(keyEl && keyEl.value, modelVal(), capVal());
-          if (keyEl) keyEl.value = "";
+          if (r.ok) {
+            if (keyEl) keyEl.value = "";
+            if (onDone) onDone(r);
+            else out(true, r.message || "Connected.");
+          } else {
+            // Keep the key in the field and the error banner on this panel.
+            // Re-rendering here would wipe both, which looked like a flash.
+            out(false, r.message || "Could not connect.");
+          }
         }
-        if (onDone) onDone(r);
-        else out(!!r.ok, r.message || (r.ok ? "Settings saved." : "Could not save."));
       } catch (e) { out(false, "Could not reach Anthropic."); }
       finally { const b = document.getElementById("aiSave"); if (b) b.disabled = false; }
     };
