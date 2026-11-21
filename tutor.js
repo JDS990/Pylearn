@@ -204,7 +204,7 @@
   function aiSection() {
     let h = `<div id="aiChat"><div class="thead"><h3>Ask the AI tutor</h3></div>`;
     if (!state.ai.connected) {
-      h += `<p class="tmeta">Optional. Connect your Anthropic API key in <b>AI tutor</b> settings. Never paste a key into this box. The built-in tutor above works with no key.</p></div>`;
+      h += `<p class="tmeta">Optional. In <b>AI tutor</b> settings, choose Ollama (desktop, free and local) or connect an Anthropic API key. Never paste a key into this box. The built-in tutor above works with no key.</p></div>`;
       return h;
     }
     h += `<div id="aiMsgs">`;
@@ -232,6 +232,7 @@
     try {
       const st = await host.aiStatus();
       state.ai.connected = !!(st && st.connected);
+      state.ai.provider = st && st.provider;
       state.ai.usage = st && st.usage;
       if (state.ai.connected && !state.ai.loaded && host.aiHistory) {
         const h = await host.aiHistory();
@@ -252,9 +253,12 @@
     state.ai.msgs = (state.ai.msgs || []).concat([{ role: "user", content: q }]);
     if (qel) qel.value = "";
     const err = document.getElementById("aiErr");
-    if (err) err.innerHTML = "<div class='tmeta'>Thinking…</div>";
+    const thinking = (state.ai.provider === "ollama")
+      ? "Thinking… a local model can take up to a minute or two."
+      : "Thinking…";
+    if (err) err.innerHTML = "<div class='tmeta'>" + thinking + "</div>";
     const chat = document.getElementById("aiChat");
-    if (chat) { chat.outerHTML = aiSection(); bindAI(); const e2 = document.getElementById("aiErr"); if (e2) e2.innerHTML = "<div class='tmeta'>Thinking…</div>"; }
+    if (chat) { chat.outerHTML = aiSection(); bindAI(); const e2 = document.getElementById("aiErr"); if (e2) e2.innerHTML = "<div class='tmeta'>" + thinking + "</div>"; }
     try {
       const r = await host.aiAsk({ question: q, code: code() });
       if (r && r.usage) state.ai.usage = r.usage;

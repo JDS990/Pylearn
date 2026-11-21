@@ -278,6 +278,7 @@
     if (st.connected) {
       return `<div class="card" id="aiCard"><h3>🧑‍🏫 AI tutor is connected</h3>
         <p class="muted small">A key is saved on this device only. It is never synced or exported, and will not be shown again. The built-in tutor still works if Anthropic is unavailable.</p>
+        <p class="muted small">Ollama (local, free) is available in the desktop app only.</p>
         <div class="muted small" id="aiUse">${esc(usageLine(st.usage))}</div>
         <label class="fieldl"><span>Model</span><select id="aiModel">${models}</select></label>
         <label class="fieldl"><span>Daily request cap (0 = no cap)</span><input id="aiCap" type="number" min="0" max="500" value="${esc(cap)}"></label>
@@ -286,6 +287,7 @@
     }
     return `<div class="card" id="aiCard"><h3>🧑‍🏫 Optional AI tutor</h3>
       <p class="muted small">The built-in tutor works with no key. The AI tutor is a chat on top, using your own Anthropic account. Default model: Claude Haiku 5.5.</p>
+      <p class="muted small">Ollama (local, free) is available in the desktop app only — this phone page can't reach a local model on your computer.</p>
       ${stepsHtml()}
       <label class="fieldl"><span>Anthropic API key</span><input id="aiKey" type="password" placeholder="sk-ant-…" spellcheck="false" autocomplete="off"></label>
       <label class="fieldl"><span>Model</span><select id="aiModel">${models || '<option value="claude-haiku-5-5">Claude Haiku 5.5</option>'}</select></label>
