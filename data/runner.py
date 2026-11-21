@@ -39,6 +39,10 @@ def setup(runtime_json, emit):
     _STATE["emit"] = emit
     _STATE["harness"] = _load_module("pylearn_harness", rt["harness"], "/pylearn/harness.py")
     _STATE["errors"] = _load_module("pylearn_errors", rt["errors"], "/pylearn/errors.py")
+    # also expose as `errors` so app/tutor.py can `from errors import explain_error`
+    sys.modules["errors"] = _STATE["errors"]
+    _load_module("tutor_notes", rt["tutor_notes"], "/pylearn/tutor_notes.py")
+    _STATE["tutor"] = _load_module("tutor", rt["tutor"], "/pylearn/tutor.py")
     _STATE["home"] = os.getcwd()
     _STATE["recursion"] = sys.getrecursionlimit()
     _STATE["builtins"] = dict(builtins.__dict__)
@@ -185,3 +189,11 @@ def check(code, test, timeout):
     res["timeout"] = False
     res["explanation"] = _STATE["errors"].explain_error(res["stderr"], False, timeout)
     return json.dumps(res)
+
+
+
+def tutor(payload_json):
+    """Run the same Socratic tutor as the desktop /api/tutor."""
+    payload = json.loads(payload_json)
+    lesson = payload.get("lesson") or {}
+    return json.dumps(_STATE["tutor"].handle(lesson, payload))

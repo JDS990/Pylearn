@@ -265,3 +265,14 @@ pre.code, .codebox { font-family: var(--mono); font-size: var(--codefs); line-he
 .lead-n { float: right; font-size: 12.5px; color: var(--muted); font-variant-numeric: tabular-nums; margin-left: 8px; }
 .walkbtn { width: 100%; margin-bottom: 10px; }
 .step-part h3 { text-transform: none; letter-spacing: 0; }
+
+
+/* Explain this line (tutor) on drill code */
+.exq { flex: 0 0 auto; border: 0; background: transparent; color: var(--muted, #8b98a8); cursor: pointer; font-size: 13px; padding: 0 4px; line-height: 1.5; }
+.exq:hover, .exq:focus { color: #c9a227; }
+.exrow { display: flex; align-items: flex-start; gap: 2px; }
+.explines { white-space: pre; }
+#explainBox { margin-top: 12px; padding: 10px 12px; border: 1px solid var(--line, #3a4a63); border-radius: 10px; background: var(--card, #152033); font-size: 14.5px; line-height: 1.5; }
+#explainBox code { font-size: 13px; }
+.line { position: relative; }
+.line .exq { margin-right: 4px; }

@@ -136,7 +136,7 @@ class PyRunner {
       const job = { id: ++this.seq, kind, timeout, onStream, out: "", err: "", resolve, timer: null };
       this.job = job;
       this.onStatus("busy");
-      this.w.postMessage({ id: job.id, kind, code: payload.code, test: payload.test || "", timeout });
+      this.w.postMessage({ id: job.id, kind, code: payload.code || "", test: payload.test || "", payload: payload.payload || "", timeout });
     });
   }
 }
@@ -314,12 +314,14 @@ function openLesson(id) {
         <button class="b success" id="check">✔ Check</button>
         <button class="b danger wide hidden" id="stop">■ Stop</button>
         <button class="b" id="hint">💡 Hint</button>
+        <button class="b" id="tutorBtn">🧑‍🏫 Tutor</button>
         <button class="b" id="sol">Solution</button>
       </div>
       <div class="btnrow secondary"><button class="b small" id="reset">Reset code</button></div>
       <div class="kbd">Ctrl+Enter run · Ctrl+Shift+Enter check · Tab indents</div>
       <div id="hintBox" class="banner info md hidden"></div>
       <div id="solBox" class="hidden"><pre class="code"></pre><button class="b small" id="useSol">Put solution in the editor</button></div>
+      <div id="tutorBox" class="hidden"></div>
       </div>
       <div id="result"></div>
     </div>
@@ -348,12 +350,35 @@ function openLesson(id) {
   if (next) $("next").onclick = () => { openLesson(next.id); };
   window.scrollTo(0, 0);
   renderNav();
+  setupTutor(l);
   setupGate(l);
   setBusy(S.busy);
   S.progress.last = id; saveProgress();
   S.loaded = { id, code: $("editor") ? $("editor").value : null };   // what the editor showed when opened (sync: did you type since?)
 }
 // ---------------------------------------------------------------- read-the-task gate (careful.js)
+
+function setupTutor(l) {
+  if (typeof PyTutor === "undefined") return;
+  PyTutor.init({
+    request: async (p) => {
+      const payload = JSON.stringify(Object.assign({ lesson: { id: l.id, title: l.title, task: l.task, starter: l.starter, solution: l.solution, hint: l.hint, timeout: l.timeout, tutor: l.tutor || {} } }, p, { code: p.code != null ? p.code : (document.getElementById("editor")||{}).value || "" }));
+      const timeout = Math.max(8, (l.web_timeout || 20));
+      return runner.exec("tutor", { code: "", test: "", payload }, timeout);
+    },
+    getCode: () => { const ed = $("editor"); return ed ? ed.value : ""; },
+    getCursorLine: () => {
+      const ed = $("editor"); if (!ed) return 1;
+      return (ed.value || "").slice(0, ed.selectionStart || 0).split("\n").length;
+    },
+    inline: inline, highlight: highlight, md: md,
+    flashTask: (phrase) => { const tb = $("taskBox"); if (tb && phrase && window.PyCareful) PyCareful.flash(tb, phrase, false); },
+  });
+  const btn = $("tutorBtn");
+  if (btn) btn.onclick = () => PyTutor.ask({ reset: true });
+  PyTutor.bindGutter();
+}
+
 function isUnlocked(id) {
   const l = byId[id];
   return isDone(id) || S.progress.gates.includes(id) || !(l && l.gate && l.gate.length);
@@ -400,8 +425,8 @@ document.addEventListener("visibilitychange", () => { if (document.visibilitySta
 function updateGutter() {
   const ed = $("editor"), g = $("gutter"); if (!ed || !g) return;
   const n = ed.value.split("\n").length;
-  let s = ""; for (let i = 1; i <= n; i++) s += i + "\n";
-  g.textContent = s;
+  let s = ""; for (let i = 1; i <= n; i++) s += '<span class="gln" data-n="'+i+'">'+i+'</span>\n';
+  g.innerHTML = s;
   ed.style.height = "auto";
   const h = Math.max(220, ed.scrollHeight + 2);
   ed.style.height = h + "px";
@@ -609,13 +634,16 @@ async function doCheck() {
     if (r.status !== "pass" && !r.stopped) {
       // point back at the task line this failure is about
       nud = PyCareful.nudge(l.task, r);
-      h += '<div class="banner fail">' + PyCareful.nudgeHTML(nud) + "❌ " + inline(r.message || "Not yet.") + "</div>";
+      h += '<div class="banner fail">' + PyCareful.nudgeHTML(nud) + "❌ " + inline(r.message || "Not yet.") +
+           ' <div><button class="b small" id="askTutor">🧑‍🏫 Ask the tutor</button></div></div>';
       breath = PyCareful.recordFail(id);
       if (breath) h += PyCareful.breatheHTML();
     } else if (r.status !== "pass") h += '<div class="banner fail">❌ ' + inline(r.message || "Not yet.") + "</div>";
     if (r.explanation) h += '<div class="banner info md">' + inline(r.explanation) + "</div>";
     if (r.stdout || r.stderr) h += '<div class="out">' + esc(r.stdout || "") + '<span class="err">' + esc(r.stderr || "") + "</span></div>";
     res.innerHTML = h;
+    const at = $("askTutor");
+    if (at) at.onclick = () => { PyTutor.ask({ reset: true, check: r }); const tb = $("tutorBox"); if (tb) tb.scrollIntoView({ block: "nearest", behavior: "smooth" }); };
     if (nud) {
       PyCareful.flash($("taskBox"), nud.search, false);
       const a = res.querySelector(".nudge-link");

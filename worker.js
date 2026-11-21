@@ -40,9 +40,10 @@ self.onmessage = async (e) => {
   currentId = job.id;
   postMessage({ type: "start", id: job.id });
   try {
-    const json = job.kind === "check"
-      ? runner.check(job.code, job.test, job.timeout)
-      : runner.run(job.code, job.timeout);
+    let json;
+    if (job.kind === "check") json = runner.check(job.code, job.test, job.timeout);
+    else if (job.kind === "tutor") json = runner.tutor(job.payload);
+    else json = runner.run(job.code, job.timeout);
     postMessage({ type: "result", id: job.id, result: JSON.parse(json) });
   } catch (err) {
     // Only reached if Python itself broke (e.g. the WebAssembly stack overflowed).

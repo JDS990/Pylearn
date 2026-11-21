@@ -2,7 +2,7 @@
 // The drills app (small) is precached on install so it works offline right away.
 // Pyodide (about 14 MB, only needed for coding lessons) is cached the first time a
 // coding lesson loads it, in its own cache that survives app updates.
-const VERSION = "132774bd2144";
+const VERSION = "9ca0880ddec0";
 const CORE = "pylearn-core-" + VERSION;
 const PYO = "pylearn-pyodide-314.0.8";
 const CORE_ASSETS = [
@@ -27,6 +27,7 @@ const CORE_ASSETS = [
  "manifest.json",
  "style.css",
  "sync.js",
+ "tutor.js",
  "worker.js"
 ];
 const PYODIDE_ASSETS = [

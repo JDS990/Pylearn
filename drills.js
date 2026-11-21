@@ -590,11 +590,13 @@ function renderRead(lid) {
   const l = D.byId[lid];
   if (!l) return go("#/learn");
   setBar({ title: lid + " " + l.title, back: () => history.length > 1 ? history.back() : go("#/lesson/" + lid) }); setTab("learn");
-  const parts = (l.steps || []).map((s, i) => `<div class="card md step-part"><h3>🪜 Part ${i + 1} · ${inline(s.title)}</h3>${md(s.text)}${s.example ? `<pre class="code">${highlight(s.example.replace(/\n$/, ""))}</pre>` : ""}</div>`).join("");
+  const parts = (l.steps || []).map((s, i) => `<div class="card md step-part"><h3>🪜 Part ${i + 1} · ${inline(s.title)}</h3>${md(s.text)}${s.example ? `<pre class="code explines">${explainRows(s.example.replace(/\n$/, ""))}</pre>` : ""}</div>`).join("");
   view(`<h2 class="page">${esc(l.title)}</h2><div class="card md">${md(l.text)}</div>
     ${parts}
-    <div class="card"><h3>Example</h3><pre class="code">${highlight(l.example.replace(/\n$/, ""))}</pre></div>
+    <div class="card"><h3>Example</h3><pre class="code explines">${explainRows(l.example.replace(/\n$/, ""))}</pre></div>
     <button class="btn primary" id="practice">▶ Practice this lesson</button>`);
+  bindExplain((l.example || "").replace(/\n$/, ""));
+  (l.steps || []).forEach(st => { if (st.example) bindExplain(st.example.replace(/\n$/, "")); });
   $("practice").onclick = () => startSession("lesson", buildLesson(lid), "Lesson " + lid, lid);
 }
 
@@ -768,10 +770,44 @@ function record(it, ok, rating) {
 }
 function nextItem() { SESSION.i++; renderSession(); }
 
+
+function explainOf(src, n) {
+  if (window.PyTutor && PyTutor.explainLocal) return PyTutor.explainLocal(src, n);
+  return { line: n, text: "", explain: "The tutor is not loaded on this page." };
+}
+function showExplain(src, n) {
+  const r = explainOf(src, n);
+  let box = $("explainBox");
+  if (!box) {
+    box = document.createElement("div");
+    box.id = "explainBox";
+    const host = $("view") || document.body;
+    host.appendChild(box);
+  }
+  box.innerHTML = `<b>Line ${r.line}:</b> <code>${esc(r.text || "")}</code><div>${esc(r.explain || "")}</div>`;
+  box.scrollIntoView({ block: "nearest" });
+}
+function bindExplain(src, root) {
+  const el = root || $("view") || document;
+  for (const b of el.querySelectorAll(".exq")) {
+    b.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      showExplain(src, +b.dataset.n);
+    });
+  }
+}
+function explainRows(code) {
+  return (code || "").split("\n").map((l, i) =>
+    `<div class="exrow"><button type="button" class="exq" data-n="${i + 1}" title="Explain this line" aria-label="Explain this line">❓</button><span class="excode">${highlight(l) || " "}</span></div>`
+  ).join("");
+}
+
 function drawPredict(it, head) {
   const ch = shownChoices(it);
-  view(`${head}<pre class="code">${highlight(it.code)}</pre><div class="q">What does this print?</div>
+  view(`${head}<pre class="code explines">${explainRows(it.code)}</pre><div class="q">What does this print?</div>
     <div class="choices">${ch.map((c, k) => `<button class="choice" data-k="${k}" ${c === it.answer ? 'data-ok="1"' : ""}>${outText(c)}</button>`).join("")}</div>`);
+  bindExplain(it.code);
   act('<button class="btn" disabled>Tap an answer</button>');
   for (const b of document.querySelectorAll(".choice")) b.onclick = () => {
     if (SESSION.answered) return;
@@ -785,16 +821,27 @@ function drawPredict(it, head) {
 }
 function drawFill(it, head) {
   const [pre, post] = it.code.split("___");
-  const codeHtml = (fill, cls) => highlight(pre) + `<span class="blank ${cls || ""}" id="blank">${fill ? esc(fill) : "\u00a0?\u00a0"}</span>` + highlight(post);
+  const codeHtml = (fill, cls) => {
+    const src = (pre + "___" + post).split("\n");
+    return src.map((l, i) => {
+      let html;
+      if (l.includes("___")) {
+        const [a, b] = l.split("___");
+        html = highlight(a) + `<span class="blank ${cls || ""}" id="blank">${fill ? esc(fill) : "\u00a0?\u00a0"}</span>` + highlight(b || "");
+      } else html = highlight(l) || " ";
+      return `<div class="exrow"><button type="button" class="exq" data-n="${i + 1}" title="Explain this line" aria-label="Explain this line">❓</button><span class="excode">${html}</span></div>`;
+    }).join("");
+  };
   const ch = shownChoices(it);
   view(`${head}<div class="q" style="margin-top:4px">${esc(it.ask)}</div><div class="target">${outText(it.target)}</div>
-    <pre class="code" id="fillCode">${codeHtml()}</pre>
+    <pre class="code explines" id="fillCode">${codeHtml()}</pre>
     <div class="choices" style="margin-top:14px">${ch.map((c, k) => `<button class="choice" data-k="${k}" ${c === it.answer ? 'data-ok="1"' : ""}>${esc(c)}</button>`).join("")}</div>`);
+  bindExplain(it.code.replace("___", it.answer || "___"));
   act('<button class="btn" disabled>Tap a choice to fill the blank</button>');
   for (const b of document.querySelectorAll(".choice")) b.onclick = () => {
     if (SESSION.answered) return;
     const c = ch[+b.dataset.k], ok = c === it.answer;
-    $("fillCode").innerHTML = codeHtml(it.answer, "right");
+    $("fillCode").innerHTML = codeHtml(it.answer, "right"); bindExplain(it.code.replace("___", it.answer || "___"));
     for (const x of document.querySelectorAll(".choice")) { x.disabled = true; if (x.dataset.ok === "1") x.classList.add("right"); else if (x !== b) x.classList.add("dim"); }
     if (!ok) b.classList.add("wrong");
     haptic(ok, ok ? $("fillCode") : b);
@@ -806,7 +853,8 @@ function drawFill(it, head) {
 function drawBug(it, head) {
   const lines = it.code.split("\n");
   view(`${head}<div class="q" style="margin-top:4px">${esc(it.ask)}</div><div class="target">${outText(it.target)}</div>
-    <div class="lines" id="bugLines">${lines.map((l, k) => `<button class="line" data-n="${k + 1}"><span class="ln">${k + 1}</span><span class="lc">${highlight(l) || " "}</span></button>`).join("")}</div>`);
+    <div class="lines" id="bugLines">${lines.map((l, k) => `<button class="line" data-n="${k + 1}"><span class="ln">${k + 1}</span><button type="button" class="exq" data-n="${k + 1}" title="Explain this line" aria-label="Explain this line">❓</button><span class="lc">${highlight(l) || " "}</span></button>`).join("")}</div>`);
+  bindExplain(it.code);
   act('<button class="btn" disabled>Tap the line with the bug</button>');
   for (const b of document.querySelectorAll(".line")) b.onclick = () => {
     if (SESSION.answered) return;
@@ -831,11 +879,12 @@ function drawOrder(it, head) {
   view(`${head}<div class="q" style="margin-top:4px">${esc(it.goal)}</div><div class="target">${outText(it.target)}</div>
     <div class="muted small" style="margin:0 2px 6px">Your program</div><div class="slot-area empty" id="prog"></div>
     <div class="muted small" style="margin:12px 2px 0">Lines <span style="opacity:.8">(· shows indentation)</span></div><div class="pool" id="pool"></div>`);
-  const tile = (k, cls) => `<button class="tile ${cls}" data-k="${k}">${indentHtml(lines[k])}</button>`;
+  const tile = (k, cls) => `<div class="exrow"><button type="button" class="exq" data-n="${k + 1}" title="Explain this line" aria-label="Explain this line">❓</button><button class="tile ${cls}" data-k="${k}">${indentHtml(lines[k])}</button></div>`;
   function draw() {
     $("prog").innerHTML = placed.map(k => tile(k, "placed")).join("");
     $("prog").classList.toggle("empty", !placed.length);
     $("pool").innerHTML = pool.map(k => tile(k, placed.includes(k) ? "used" : "")).join("");
+    bindExplain(it.code);
     for (const b of $("prog").querySelectorAll(".tile")) b.onclick = () => { if (SESSION.answered) return; placed.splice(placed.indexOf(+b.dataset.k), 1); draw(); };
     for (const b of $("pool").querySelectorAll(".tile:not(.used)")) b.onclick = () => { if (SESSION.answered) return; placed.push(+b.dataset.k); draw(); };
     const full = placed.length === lines.length;
